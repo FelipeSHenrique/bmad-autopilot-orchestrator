@@ -110,8 +110,17 @@ async def process_story(
         return
 
     recoveries = 0
+    iters = 0
     while (phase := status.next_phase(story_key)) is not None:
         control.raise_if_stopped()
+        iters += 1
+        if iters > cfg.max_phase_iters_per_story:
+            # rede de segurança: se o status regredir (ex.: merge deixou o base
+            # local defasado) a story re-rodaria sem fim. Aborta p/ não queimar tokens.
+            await sink.emit(ev.error(
+                f"story {story_key}: possível loop de fases (>{cfg.max_phase_iters_per_story} "
+                "iterações) — abortando a story para não gastar tokens"))
+            break
         target = phase.next_status
         done_pred = lambda t=target: status.story_status(story_key) == t
         esc = await _run_one_phase(phase.skill, story_key, cfg, Advisor, sink, control,

@@ -1,6 +1,7 @@
 """Testes do loop em dry-run (sem chamar Claude) e das regras de git."""
 
 import asyncio
+import subprocess
 from pathlib import Path
 
 from autopilot.config import config_for_project, default_phases
@@ -43,3 +44,24 @@ def test_git_rules_dry_run_emits_events(fixture_project: Path):
 
     asyncio.run(apply_phase(cfg.phase("bmad-code-review"), runner, ctx, sink))
     assert ops == ["commit", "open_pr", "merge_pr"]
+
+
+def test_merge_pr_syncs_local_base():
+    """Após o merge (no remoto), o base LOCAL precisa ser sincronizado — senão o
+    orquestrador relê um sprint-status defasado e re-roda a story em loop."""
+    calls: list[list[str]] = []
+
+    class Rec(GitRunner):
+        def run(self, args, *, check=True):
+            calls.append(list(args))
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+    r = Rec(Path("."), dry_run=False)
+    ctx = GitContext(story_id="7-2-create-api", branch="story/7-2-create-api", base="main")
+    r.merge_pr("squash", ctx)
+
+    assert ["gh", "pr", "merge", "story/7-2-create-api", "--squash", "--delete-branch"] in calls
+    # sincroniza o main local com o remoto pós-merge
+    assert ["git", "checkout", "main"] in calls
+    assert ["git", "fetch", "origin", "main"] in calls
+    assert ["git", "reset", "--hard", "origin/main"] in calls

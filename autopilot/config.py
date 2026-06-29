@@ -100,6 +100,7 @@ class Config:
     max_turns_per_phase: int = 40
     max_decisions_per_phase: int = 12   # anti-loop: teto de decisões/perguntas por fase
     max_recoveries_per_story: int = 2   # anti-loop: teto de recuperações por story
+    max_phase_iters_per_story: int = 12 # anti-loop: teto de iterações de fase por story
     advisor_prompt: str | None = None   # None => DEFAULT_ADVISOR_PROMPT
 
     @property

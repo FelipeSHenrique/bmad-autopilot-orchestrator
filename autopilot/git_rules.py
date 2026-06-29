@@ -21,6 +21,7 @@ class GitContext:
     story_id: str = ""
     epic_id: str = ""
     branch: str = ""
+    base: str = "main"   # branch base do PR (setada no open_pr; usada no merge sync)
 
     def fmt(self, template: str) -> str:
         return template.format(
@@ -70,6 +71,7 @@ class GitRunner:
     def open_pr(self, base: str, title: str, ctx: GitContext) -> str:
         branch = ctx.branch or self.current_branch()
         ctx.branch = branch
+        ctx.base = base
         self.run(["git", "push", "-u", "origin", branch])
         r = self.run(
             ["gh", "pr", "create", "--base", base, "--head", branch,
@@ -81,10 +83,17 @@ class GitRunner:
 
     def merge_pr(self, method: str, ctx: GitContext) -> str:
         branch = ctx.branch or self.current_branch()
+        base = ctx.base or "main"
         flag = {"squash": "--squash", "merge": "--merge", "rebase": "--rebase"}.get(
             method, "--squash"
         )
         self.run(["gh", "pr", "merge", branch, flag, "--delete-branch"], check=False)
+        # `gh pr merge` faz o merge no REMOTO e deixa o `base` LOCAL defasado. Sem
+        # sincronizar, o orquestrador relê o sprint-status antigo (story volta a
+        # backlog) e re-roda a story inteira em loop. Alinha o base local ao remoto.
+        self.run(["git", "checkout", base], check=False)
+        self.run(["git", "fetch", "origin", base], check=False)
+        self.run(["git", "reset", "--hard", f"origin/{base}"], check=False)
         return f"merge {method} ({branch})"
 
 
