@@ -48,6 +48,26 @@ def test_worker_advisor_flow(git_project: Path, fake_claude):
     assert kinds[-1] == "run_ended"
 
 
+def test_undetected_pause_gets_one_nudge(git_project: Path, fake_claude):
+    """(B) Sinal estrutural: o worker encerra um turno não-done com texto que NÃO
+    parece pergunta ("…concluí.") -> recebe UM empurrão (nudge) e a fase conclui.
+    Não pode loopar nem consultar o advisor por texto (decisão é só a estruturada)."""
+    rec = fake_claude
+    cfg = config_for_project(git_project, phases=safe_phases())
+    sink = EventSink()
+    sink.add_callback(lambda e: None)
+
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    # exatamente um nudge por fase (2 fases) -> não houve loop
+    nudges = [p for (role, p) in rec.queries
+              if role == "worker" and "AskUserQuestion" in p]
+    assert len(nudges) == 2
+    # status concluiu mesmo assim (orquestrador finaliza após o break)
+    assert SprintStatus(git_project / SS_REL).story_status("7-2-create-api") == "done"
+
+
 def test_stop_cancels_mid_turn(git_project: Path, fake_claude):
     rec = fake_claude
     rec.worker_mode = "block"   # worker trava no meio do turno

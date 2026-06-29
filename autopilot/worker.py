@@ -49,20 +49,46 @@ use sempre a tool AskUserQuestion para qualquer decisão.
 pergunta final).
 """
 
+# Dicas de que o worker está pedindo uma decisão em texto (PT + EN), incluindo
+# marcadores explícitos de pausa (HALT) e prompts de confirmação que NÃO terminam
+# em "?" — ex.: "(Y to continue)", "Próximo passo?", "aguardando sua escolha".
 _QUESTION_HINTS = re.compile(
-    r"(<ask\b|choose option|\(yes/no\)|\[q\]|q\] to quit|select (one|an option)|"
-    r"which (option|one)|please (choose|select|specify|provide))",
+    r"(<ask\b"
+    r"|choose option|choose \[|select (one|an option|from)|which (option|one)"
+    r"|\(yes/no\)|\(y/n\)|\(y\b|\[y\]|\[q\]|q\] to quit|press enter"
+    r"|please (choose|select|specify|provide)"
+    r"|shall i\b|do you want|would you like|how would you like"
+    r"|proceed\?|continue\?|next step\?"
+    r"|\bHALT\b|awaiting your (choice|selection|input|response)"
+    # português
+    r"|pr[oó]ximo passo|aguardando (sua |a sua )?(escolha|sele[cç][aã]o|resposta|decis[aã]o)"
+    r"|qual (op[cç][aã]o|a op[cç][aã]o|delas|voc[eê] (prefere|deseja|quer))"
+    r"|escolha (uma|a op[cç][aã]o|entre)|deseja (continuar|prosseguir))",
     re.IGNORECASE,
 )
 
+# Linha de menu numerado: "1. …", "2) …", "❯ 1. …", "▎ 3. …".
+_MENU_LINE = re.compile(r"^[\s>❯▎*+\-]*\(?[1-9][0-9]?\)?[.)]\s+\S")
+
 
 def _looks_like_question(text: str) -> bool:
-    if not text:
+    """Rede de segurança: o worker pausou pedindo uma decisão em TEXTO?
+
+    Só importa quando a skill NÃO chama AskUserQuestion (caminho estruturado).
+    Combina dicas conhecidas (PT+EN, incl. HALT/menus) com '?' nas últimas linhas
+    e um menu numerado com '?' por perto. Um falso positivo custa no máximo uma
+    consulta ao advisor (limitada por max_decisions_per_phase)."""
+    if not text or not text.strip():
         return False
     if _QUESTION_HINTS.search(text):
         return True
-    tail = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
-    return bool(tail) and tail[-1].endswith("?")
+    recent = [ln.strip() for ln in text.strip().splitlines() if ln.strip()][-6:]
+    if any(ln.endswith("?") for ln in recent):
+        return True
+    # menu numerado próximo do fim, com um '?' por perto — evita confundir com um
+    # changelog "1. … 2. …" de fim de review (esse não tem '?' nem palavra-dica).
+    menu = sum(1 for ln in recent if _MENU_LINE.match(ln))
+    return menu >= 2 and any("?" in ln for ln in recent)
 
 
 async def _dummy_pre_tool_hook(input_data: dict, tool_use_id: str | None, context: Any):
@@ -136,29 +162,42 @@ async def run_phase(
     await client.connect()
     try:
         await client.query(invocation)
+        nudged = False  # (B) já demos um empurrão neste impasse?
         for _ in range(cfg.max_turns_per_phase):
             await control.gate()  # respeita pause; levanta StopRequested se stop
             last_text = await _drain_turn(client, sink)
 
-            # 1) sinal autoritativo: o status já chegou ao alvo -> fase concluída.
+            # 1) conclusão autoritativa por status -> fase concluída.
             if done_predicate is not None and done_predicate():
                 break
 
-            # 2) pergunta pendente em texto -> advisor responde (rede de segurança).
-            if _looks_like_question(last_text) and decisions["n"] <= cap:
-                decisions["n"] += 1
-                if decisions["n"] > cap:
+            # 2) (A) pergunta/decisão detectada em texto -> advisor responde e injeta.
+            if _looks_like_question(last_text):
+                if decisions["n"] >= cap:  # anti-loop (skills tagarelas)
                     await client.query(
-                        "Já respondi muitas decisões; finalize a fase agora e atualize "
-                        "o sprint-status, sem mais perguntas.")
-                else:
-                    answer = await advisor.decide_text(last_text)
-                    await control.gate()
-                    await client.query(answer)
+                        "Já respondi muitas decisões nesta fase; finalize agora e "
+                        "atualize o sprint-status, sem mais perguntas.")
+                    break
+                decisions["n"] += 1
+                answer = await advisor.decide_text(last_text)
+                await control.gate()
+                await client.query(answer)
+                nudged = False  # houve interação -> reseta o empurrão
                 continue
 
-            # 3) sem pergunta e sem done: se a fase escreve status, isso é a conclusão;
-            #    senão, o loop encerra aqui de qualquer forma (o orquestrador grava o status).
+            # 3) (B) não-done e SEM pergunta clara: não encerrar em silêncio (senão o
+            # orquestrador avançaria o status por cima de uma decisão não respondida).
+            # Dá UM empurrão (auto-decidir/finalizar). Se nada mudar, conclui (break) e
+            # o orquestrador grava o status — sem ficar consultando o advisor em loop.
+            if last_text.strip() and not nudged:
+                nudged = True
+                await control.gate()
+                await client.query(
+                    "Se você está aguardando uma decisão ou exibindo opções, escolha a "
+                    "melhor opção para ESTE projeto e prossiga. Se a fase terminou, "
+                    "finalize e atualize o sprint-status. Não faça perguntas em texto "
+                    "livre — use a tool AskUserQuestion.")
+                continue
             break
         else:
             await sink.emit(
