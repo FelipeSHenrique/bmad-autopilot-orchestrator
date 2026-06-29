@@ -1,0 +1,21 @@
+# generated: 25-06-2026 10:00
+# last_updated: 25-06-2026 10:00
+# project: Fixture Project
+# tracking_system: file-system
+
+# STATUS DEFINITIONS:
+#   Story: backlog -> ready-for-dev -> in-progress -> review -> done
+#   Retrospective: optional -> done
+
+development_status:
+  epic-7: in-progress
+  7-1-define-schema: done
+  7-2-create-api: ready-for-dev
+  7-3-build-ui: backlog
+  7-10-polish: backlog
+  epic-7-retrospective: optional
+
+  epic-8: backlog
+  8-1-personality: backlog
+
+action_items: []

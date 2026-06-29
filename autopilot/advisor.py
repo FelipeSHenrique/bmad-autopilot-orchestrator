@@ -1,0 +1,186 @@
+"""A sessão 'advisor': um agente Claude com persona que toma as decisões
+que as skills do BMAD levantariam.
+
+É read-only (Read/Grep/Glob): inspeciona o código e os artefatos de
+planejamento do projeto antes de escolher, e devolve a escolha + uma
+justificativa. Emite eventos (deltas token-a-token, tool_use, decisão) no
+EventSink, e registra cada decisão num log de auditoria.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from datetime import datetime, timezone
+from typing import Any
+
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    ResultMessage,
+    StreamEvent,
+    TextBlock,
+    ToolUseBlock,
+)
+
+from . import events as ev
+from .config import DEFAULT_ADVISOR_PROMPT, Config
+from .events import EventSink
+
+ROLE = "advisor"
+PERSONA = DEFAULT_ADVISOR_PROMPT  # default; pode ser sobrescrito por projeto
+
+_JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _extract_json(text: str) -> dict[str, Any] | None:
+    candidates = list(_JSON_BLOCK_RE.findall(text))
+    if not candidates:
+        start, end = text.rfind("{"), text.rfind("}")
+        if start != -1 and end > start:
+            candidates.append(text[start : end + 1])
+    for raw in reversed(candidates):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+class Advisor:
+    """Mantém uma sessão Claude por fase; cada decide() reaproveita o contexto."""
+
+    def __init__(self, cfg: Config, sink: EventSink):
+        self.cfg = cfg
+        self.sink = sink
+        self._client: ClaudeSDKClient | None = None
+        self._log_path = cfg.bmad_project_dir / cfg.log_dir / "decisions.jsonl"
+        self._memory_path = cfg.bmad_project_dir / ".autopilot" / "advisor-memory.md"
+        self.current_phase = ""   # setado pelo worker antes de cada fase
+
+    def _memory_text(self, limit: int = 6000) -> str:
+        """Conteúdo recente da memória do advisor (para dar contexto)."""
+        if not self._memory_path.exists():
+            return ""
+        text = self._memory_path.read_text(encoding="utf-8")
+        return text[-limit:]
+
+    def _memory_context(self) -> str:
+        mem = self._memory_text()
+        if not mem.strip():
+            return ""
+        return (
+            "\n\nMEMÓRIA (decisões anteriores suas neste projeto — use para "
+            "manter consistência):\n----\n" + mem + "\n----\n"
+        )
+
+    async def __aenter__(self) -> "Advisor":
+        options = ClaudeAgentOptions(
+            cwd=str(self.cfg.bmad_project_dir),
+            system_prompt=self.cfg.effective_advisor_prompt,
+            tools=["Read", "Grep", "Glob"],   # read-only
+            permission_mode="bypassPermissions",
+            include_partial_messages=True,
+            model=self.cfg.models.advisor,
+        )
+        self._client = ClaudeSDKClient(options=options)
+        await self._client.connect()
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        if self._client is not None:
+            await self._client.disconnect()
+            self._client = None
+
+    async def _ask(self, prompt: str) -> str:
+        assert self._client is not None, "Advisor não conectado (use 'async with')"
+        await self._client.query(prompt)
+        parts: list[str] = []
+        async for msg in self._client.receive_response():
+            if isinstance(msg, StreamEvent):
+                text = _delta_text(msg)
+                if text:
+                    await self.sink.emit(ev.assistant_delta(ROLE, text))
+            elif isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        parts.append(block.text)
+                    elif isinstance(block, ToolUseBlock):
+                        await self.sink.emit(ev.tool_use(ROLE, block.name, block.input))
+            elif isinstance(msg, ResultMessage):
+                break
+        return "".join(parts)
+
+    # ---- API pública ---------------------------------------------------
+    async def decide_structured(self, questions: list[dict[str, Any]]) -> dict[str, Any]:
+        prompt = (
+            "O workflow BMAD apresentou as perguntas/escolhas abaixo (formato "
+            "AskUserQuestion). Decida a melhor opção para cada uma.\n\n"
+            f"```json\n{json.dumps(questions, ensure_ascii=False, indent=2)}\n```\n\n"
+            "Responda APENAS com um bloco JSON:\n"
+            '```json\n{\n  "answers": { "<texto exato da pergunta>": "<label '
+            'escolhida>" },\n  "rationale": "<por que, citando código/artefatos>"\n}\n```\n'
+            "Para perguntas multiSelect, o valor é uma lista de labels."
+            + self._memory_context()
+        )
+        text = await self._ask(prompt)
+        data = _extract_json(text) or {}
+        answers = data.get("answers", {})
+        await self._record(questions, answers, data.get("rationale", ""))
+        return answers
+
+    async def decide_text(self, question_text: str) -> str:
+        prompt = (
+            "O workflow BMAD pausou e fez a pergunta abaixo (texto livre, "
+            "tipicamente uma tag <ask> com opções). Decida e produza a resposta "
+            "EXATA que um usuário digitaria para o workflow seguir.\n\n"
+            f"--- pergunta do worker ---\n{question_text}\n--- fim ---\n\n"
+            "Responda APENAS com um bloco JSON:\n"
+            '```json\n{\n  "answer": "<o que digitar para o worker>",\n'
+            '  "rationale": "<por que, citando código/artefatos>"\n}\n```'
+            + self._memory_context()
+        )
+        text = await self._ask(prompt)
+        data = _extract_json(text) or {}
+        answer = str(data.get("answer", "")).strip()
+        await self._record(question_text, answer, data.get("rationale", ""))
+        if not answer:
+            answer = "Use your best judgment based on the existing codebase and proceed."
+        return answer
+
+    # ---- auditoria + memória -------------------------------------------
+    async def _record(self, question: Any, decision: Any, rationale: str) -> None:
+        ts = datetime.now(timezone.utc).isoformat()
+        await self.sink.emit(
+            ev.advisor_decision(question, decision, rationale, phase=self.current_phase)
+        )
+        self._log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "ts": ts, "phase": self.current_phase,
+                "question": question, "decision": decision, "rationale": rationale,
+            }, ensure_ascii=False) + "\n")
+        self._append_memory(ts, question, decision, rationale)
+
+    def _append_memory(self, ts: str, question: Any, decision: Any, rationale: str) -> None:
+        """Anexa um item conciso à memória legível do advisor."""
+        self._memory_path.parent.mkdir(parents=True, exist_ok=True)
+        q = question if isinstance(question, str) else json.dumps(question, ensure_ascii=False)
+        d = decision if isinstance(decision, str) else json.dumps(decision, ensure_ascii=False)
+        entry = (
+            f"\n## {ts} — {self.current_phase or 'fase?'}\n"
+            f"- Pergunta: {q[:300]}\n- Escolha: {d[:300]}\n- Razão: {rationale[:400]}\n"
+        )
+        with self._memory_path.open("a", encoding="utf-8") as fh:
+            fh.write(entry)
+
+
+def _delta_text(stream_ev: StreamEvent) -> str:
+    """Extrai texto incremental de um StreamEvent (content_block_delta)."""
+    raw = stream_ev.event or {}
+    if raw.get("type") == "content_block_delta":
+        delta = raw.get("delta", {})
+        if delta.get("type") == "text_delta":
+            return delta.get("text", "")
+    return ""

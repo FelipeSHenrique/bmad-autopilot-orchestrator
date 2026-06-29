@@ -1,0 +1,34 @@
+name: AutopilotApp
+options:
+  bundleIdPrefix: com.felipe.autopilot
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_HARDENED_RUNTIME: YES
+    CODE_SIGN_STYLE: Automatic
+targets:
+  AutopilotApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+      - path: Resources
+        buildPhase: resources
+        optional: true
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: Autopilot
+        LSMinimumSystemVersion: "14.0"
+        NSHumanReadableCopyright: ""
+        # Permite acesso a processos/arquivos do usuário (sandbox desligado p/ uso pessoal)
+    entitlements:
+      path: Sources/AutopilotApp.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+        com.apple.security.network.client: true

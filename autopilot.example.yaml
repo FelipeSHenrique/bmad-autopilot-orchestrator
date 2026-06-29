@@ -1,0 +1,39 @@
+# Copie para autopilot.yaml e ajuste ao seu projeto BMAD v6.
+bmad_project_dir: /caminho/para/seu/projeto-bmad
+
+# Paths relativos ao projeto. Confirme em _bmad/bmm/config.yaml (chaves
+# implementation_artifacts / planning_artifacts) do seu install v6.8.0.
+sprint_status_path: _bmad-output/implementation-artifacts/sprint-status.yaml
+planning_artifacts_dir: _bmad-output/planning-artifacts
+
+# Como disparar a skill via client.query(). {skill} e {story_id} são
+# substituídos. Se o seu install expõe as skills como slash-command, troque por:
+#   "/bmad:bmm:workflows:{skill_short} for {story_id}"  (ajuste conforme o install)
+invoke_template: "Run the {skill} workflow for {story_id}."
+
+models:
+  worker: claude-opus-4-8
+  advisor: claude-opus-4-8   # advisor >= worker
+
+autonomy:
+  human_checkpoint: none     # none | end-of-story | retrospective
+
+max_turns_per_phase: 40
+log_dir: .autopilot/logs
+
+phases:
+  bmad-create-story:
+    git:
+      - create_branch: "story/{story_id}"
+      - commit: "story: draft {story_id}"
+  bmad-dev-story:
+    git:
+      - commit: "feat: implement {story_id}"
+  bmad-code-review:
+    git:
+      - commit: "review: {story_id}"
+      - open_pr: { base: main, title: "{story_id}" }
+      - merge_pr: { method: squash }
+  bmad-retrospective:
+    git:
+      - commit: "chore: retrospective epic-{epic_id}"

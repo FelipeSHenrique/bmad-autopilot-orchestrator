@@ -1,0 +1,24 @@
+bmad_project_dir: tests/fixture_project
+sprint_status_path: _bmad-output/implementation-artifacts/sprint-status.yaml
+planning_artifacts_dir: _bmad-output/planning-artifacts
+models:
+  worker: claude-opus-4-8
+  advisor: claude-opus-4-8
+autonomy:
+  human_checkpoint: none
+phases:
+  bmad-create-story:
+    git:
+      - create_branch: "story/{story_id}"
+      - commit: "story: draft {story_id}"
+  bmad-dev-story:
+    git:
+      - commit: "feat: implement {story_id}"
+  bmad-code-review:
+    git:
+      - commit: "review: {story_id}"
+      - open_pr: { base: main, title: "{story_id}" }
+      - merge_pr: { method: squash }
+  bmad-retrospective:
+    git:
+      - commit: "chore: retrospective epic-{epic_id}"

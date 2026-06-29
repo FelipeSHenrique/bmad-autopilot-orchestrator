@@ -1,0 +1,101 @@
+"""Integração worker → advisor com o ClaudeSDKClient fakeado (sem tokens)."""
+
+import asyncio
+from pathlib import Path
+
+import pytest
+
+import fakes
+from autopilot.config import config_for_project, safe_phases
+from autopilot.events import EventSink, RunControl
+from autopilot.loop import run as run_loop
+from autopilot.status import SprintStatus
+
+SS_REL = "_bmad-output/implementation-artifacts/sprint-status.yaml"
+
+
+def test_worker_advisor_flow(git_project: Path, fake_claude):
+    rec = fake_claude
+    cfg = config_for_project(git_project, phases=safe_phases())
+    sink = EventSink()
+    kinds: list[str] = []
+    decisions: list[dict] = []
+    sink.add_callback(lambda e: (kinds.append(e.kind),
+                                 decisions.append(e.data) if e.kind == "advisor_decision" else None))
+
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    # 7-2 (ready-for-dev) → dev-story + code-review = 2 fases
+    assert rec.connects.count("worker") == 2
+    assert rec.connects.count("advisor") == 2
+    assert rec.disconnects.count("worker") == 2
+    assert rec.disconnects.count("advisor") == 2
+
+    # o worker chamou AskUserQuestion e o advisor respondeu (rota estruturada)
+    assert rec.answers == {fakes.QUESTIONS[0]["question"]: "Repository pattern"}
+    assert len(decisions) == 2
+    assert all("Repository pattern" in str(d["decision"]) for d in decisions)
+    assert all(d["phase"] in ("bmad-dev-story", "bmad-code-review") for d in decisions)
+
+    # status avançou até done
+    ss = SprintStatus(git_project / SS_REL)
+    assert ss.story_status("7-2-create-api") == "done"
+
+    # memória do advisor + log de decisões gravados
+    assert (git_project / ".autopilot/advisor-memory.md").read_text().strip()
+    assert (git_project / ".autopilot/logs/decisions.jsonl").exists()
+    assert kinds[-1] == "run_ended"
+
+
+def test_stop_cancels_mid_turn(git_project: Path, fake_claude):
+    rec = fake_claude
+    rec.worker_mode = "block"   # worker trava no meio do turno
+    cfg = config_for_project(git_project, phases=safe_phases())
+    sink = EventSink()
+    kinds: list[str] = []
+    sink.add_callback(lambda e: kinds.append(e.kind))
+    control = RunControl()
+
+    async def go():
+        task = asyncio.create_task(run_loop(
+            cfg, story="7-2-create-api", epic=None, dry_run=False,
+            sink=sink, control=control))
+        await asyncio.sleep(0.1)     # deixa o worker conectar e bloquear
+        task.cancel()                # equivalente ao que o RunManager.stop faz
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(go())
+
+    # o worker conectou e, no cancel, o finally desconectou (limpou a sessão claude)
+    assert "worker" in rec.connects
+    assert "worker" in rec.disconnects
+    # e o run encerrou sinalizando parada
+    assert "run_ended" in kinds
+
+
+def test_phase_does_not_loop_forever(git_project: Path, fake_claude):
+    """Skill tagarela que nunca conclui (pergunta todo turno) deve PARAR no teto
+    de decisões/turnos, em vez de loopar infinito (bug do retrospective)."""
+    rec = fake_claude
+    rec.worker_mode = "loop"
+    cfg = config_for_project(git_project, phases=safe_phases())
+    cfg.max_turns_per_phase = 20  # teto duro de turnos
+    sink = EventSink()
+    kinds: list[str] = []
+    sink.add_callback(lambda e: kinds.append(e.kind))
+
+    async def go():
+        await asyncio.wait_for(
+            run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                     sink=sink, control=RunControl()),
+            timeout=30,  # se loopar de verdade, estoura aqui e o teste falha
+        )
+
+    asyncio.run(go())
+    # terminou (não travou) e cada fase respeitou o teto de decisões
+    assert kinds[-1] == "run_ended"
+    decisions = sum(1 for k in kinds if k == "advisor_decision")
+    # 2 fases (dev-story, code-review) × teto(12) + folga
+    assert decisions <= 2 * cfg.max_decisions_per_phase + 2
