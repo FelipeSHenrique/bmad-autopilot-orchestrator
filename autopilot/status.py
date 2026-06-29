@@ -101,6 +101,9 @@ class SprintStatus:
     def retrospective_key(self, epic: int | str) -> str:
         return f"epic-{int(epic)}-retrospective"
 
+    def epic_key(self, epic: int | str) -> str:
+        return f"epic-{int(epic)}"
+
     # ---- ordenação (bloquear play fora de ordem) -----------------------
     def story_runnable(self, key: str) -> tuple[bool, str]:
         """Uma story só roda se todas as stories de número MENOR na mesma epic

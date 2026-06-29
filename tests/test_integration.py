@@ -68,6 +68,22 @@ def test_undetected_pause_gets_one_nudge(git_project: Path, fake_claude):
     assert SprintStatus(git_project / SS_REL).story_status("7-2-create-api") == "done"
 
 
+def test_epic_marks_label_done(git_project: Path, fake_claude):
+    """Ao completar a epic (todas as stories + retrospective), o rótulo epic-N
+    deve virar 'done' — senão a UI mostra 'in-progress' enganoso."""
+    cfg = config_for_project(git_project, phases=safe_phases())
+    sink = EventSink()
+    sink.add_callback(lambda e: None)
+
+    asyncio.run(run_loop(cfg, story=None, epic="7", dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    ss = SprintStatus(git_project / SS_REL)
+    assert ss.story_status("epic-7-retrospective") == "done"
+    assert ss.story_status("epic-7") == "done"   # rótulo da epic atualizado
+    assert ss.epic_complete(7)
+
+
 def test_stop_cancels_mid_turn(git_project: Path, fake_claude):
     rec = fake_claude
     rec.worker_mode = "block"   # worker trava no meio do turno

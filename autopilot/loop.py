@@ -109,6 +109,17 @@ async def run_epic(
             await sink.emit(ev.log(f"'{retro_key}' não existe no sprint-status; pulando", "warn"))
         ctx = GitContext(story_id="", epic_id=str(epic_id))
         await apply_phase(cfg.phase(RETROSPECTIVE), runner, ctx, sink)
+
+        # epic concluída (stories + retrospective) -> vira o rótulo epic-N para done,
+        # senão ele fica preso em "in-progress" e a UI mostra status enganoso.
+        epic_label = status.epic_key(epic_id)
+        try:
+            frm = status.story_status(epic_label)
+            if frm != "done":
+                status.set_status(epic_label, "done")
+                await sink.emit(ev.status_changed(epic_label, "done", frm))
+        except KeyError:
+            pass  # nem todo sprint-status tem o rótulo epic-N
     else:
         pending = [s.key for s in stories if status.story_status(s.key) != "done"]
         await sink.emit(ev.log(f"epic {epic_id} incompleta; pendentes: {pending}", "warn"))
