@@ -117,7 +117,10 @@ class RunManager:
         elif action == "resume":
             self.control.resume()
         elif action == "approve":
-            self.control.approve()
+            self.control.approve()              # checkpoint
+            self.control.choose_recovery("run")  # ou: rodar a recuperação pendente
+        elif action == "skip":
+            self.control.choose_recovery("skip")  # pular a recuperação pendente
         else:
             raise HTTPException(400, "ação inválida")
 
@@ -165,7 +168,7 @@ class RunRequest(BaseModel):
 
 
 class ControlRequest(BaseModel):
-    action: str         # pause | resume | stop | approve
+    action: str         # pause | resume | stop | approve | skip
 
 
 def create_app() -> FastAPI:
@@ -232,6 +235,7 @@ def create_app() -> FastAPI:
                 "advisor": models.get("advisor") or "claude-opus-4-8",
             },
             "human_checkpoint": ov.get("human_checkpoint") or "none",
+            "recovery_policy": ov.get("recovery_policy") or "tiered",
             "phases": phases_to_dict(phases),
             "has_override_file": project_overrides_path(proj["path"]).exists(),
         }
@@ -276,6 +280,7 @@ def create_app() -> FastAPI:
             human_checkpoint=ov.get("human_checkpoint") or checkpoint,  # type: ignore[arg-type]
             phases=phases,
             advisor_prompt=ov.get("advisor_prompt"),
+            recovery_policy=ov.get("recovery_policy"),
         )
         mgr.start(cfg, body.scope, body.id, body.dry_run)
         return {"ok": True, "current": mgr.current}

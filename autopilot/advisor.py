@@ -25,8 +25,8 @@ from claude_agent_sdk import (
 )
 
 from . import events as ev
-from .config import DEFAULT_ADVISOR_PROMPT, Config
-from .events import EventSink
+from .config import DEFAULT_ADVISOR_PROMPT, RECOVERY_SKILLS, Config
+from .events import Escalation, EventSink
 
 ROLE = "advisor"
 PERSONA = DEFAULT_ADVISOR_PROMPT  # default; pode ser sobrescrito por projeto
@@ -58,6 +58,7 @@ class Advisor:
         self._log_path = cfg.bmad_project_dir / cfg.log_dir / "decisions.jsonl"
         self._memory_path = cfg.bmad_project_dir / ".autopilot" / "advisor-memory.md"
         self.current_phase = ""   # setado pelo worker antes de cada fase
+        self.last_escalation: Escalation | None = None  # set se o advisor pediu recuperação
 
     def _memory_text(self, limit: int = 6000) -> str:
         """Conteúdo recente da memória do advisor (para dar contexto)."""
@@ -120,13 +121,16 @@ class Advisor:
             f"```json\n{json.dumps(questions, ensure_ascii=False, indent=2)}\n```\n\n"
             "Responda APENAS com um bloco JSON:\n"
             '```json\n{\n  "answers": { "<texto exato da pergunta>": "<label '
-            'escolhida>" },\n  "rationale": "<por que, citando código/artefatos>"\n}\n```\n'
+            'escolhida>" },\n  "rationale": "<por que, citando código/artefatos>",\n'
+            '  "escalate": { "skill": "bmad-quick-dev|bmad-correct-course", '
+            '"reason": "<por que>" }   // OPCIONAL — omita se não precisar\n}\n```\n'
             "Para perguntas multiSelect, o valor é uma lista de labels."
             + self._memory_context()
         )
         text = await self._ask(prompt)
         data = _extract_json(text) or {}
         answers = data.get("answers", {})
+        self._capture_escalation(data)
         await self._record(questions, answers, data.get("rationale", ""))
         return answers
 
@@ -138,16 +142,34 @@ class Advisor:
             f"--- pergunta do worker ---\n{question_text}\n--- fim ---\n\n"
             "Responda APENAS com um bloco JSON:\n"
             '```json\n{\n  "answer": "<o que digitar para o worker>",\n'
-            '  "rationale": "<por que, citando código/artefatos>"\n}\n```'
+            '  "rationale": "<por que, citando código/artefatos>",\n'
+            '  "escalate": { "skill": "bmad-quick-dev|bmad-correct-course", '
+            '"reason": "<por que>" }   // OPCIONAL — omita se não precisar\n}\n```'
             + self._memory_context()
         )
         text = await self._ask(prompt)
         data = _extract_json(text) or {}
         answer = str(data.get("answer", "")).strip()
+        self._capture_escalation(data)
         await self._record(question_text, answer, data.get("rationale", ""))
         if not answer:
             answer = "Use your best judgment based on the existing codebase and proceed."
         return answer
+
+    def _capture_escalation(self, data: dict[str, Any]) -> None:
+        """Lê o campo opcional 'escalate' do JSON do advisor e guarda em
+        last_escalation. correct-course (plano) vence quick-dev (código) se ambos
+        aparecerem na mesma fase."""
+        esc = data.get("escalate")
+        if not isinstance(esc, dict):
+            return
+        skill = str(esc.get("skill", "")).strip()
+        if skill not in RECOVERY_SKILLS:
+            return
+        reason = str(esc.get("reason", "")).strip()
+        cur = self.last_escalation
+        if cur is None or (cur.skill != "bmad-correct-course"):
+            self.last_escalation = Escalation(skill=skill, reason=reason)
 
     # ---- auditoria + memória -------------------------------------------
     async def _record(self, question: Any, decision: Any, rationale: str) -> None:

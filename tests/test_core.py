@@ -4,9 +4,36 @@ import asyncio
 from pathlib import Path
 
 from autopilot import router
+from autopilot.advisor import Advisor
 from autopilot.detect import detect
 from autopilot.events import EventSink, RunControl, StopRequested, log
 from autopilot.status import SprintStatus, parse_story_key
+
+
+# ---- advisor: parsing do campo 'escalate' ------------------------------
+def test_advisor_capture_escalation():
+    a = Advisor.__new__(Advisor)      # sem __init__ (não precisa de cfg/cliente)
+    a.last_escalation = None
+
+    # quick-dev é capturado
+    a._capture_escalation({"answers": {}, "escalate": {"skill": "bmad-quick-dev", "reason": "x"}})
+    assert a.last_escalation and a.last_escalation.skill == "bmad-quick-dev"
+
+    # correct-course (plano) vence quick-dev (código) na mesma fase
+    a._capture_escalation({"escalate": {"skill": "bmad-correct-course", "reason": "y"}})
+    assert a.last_escalation.skill == "bmad-correct-course"
+
+    # skill desconhecido é ignorado; ausência do campo mantém o anterior
+    a._capture_escalation({"escalate": {"skill": "nope"}})
+    a._capture_escalation({"answers": {}})
+    assert a.last_escalation.skill == "bmad-correct-course"
+
+
+def test_advisor_no_escalation_by_default():
+    a = Advisor.__new__(Advisor)
+    a.last_escalation = None
+    a._capture_escalation({"answers": {"q": "a"}, "rationale": "..."})
+    assert a.last_escalation is None
 
 
 # ---- status ------------------------------------------------------------

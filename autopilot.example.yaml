@@ -17,8 +17,13 @@ models:
 
 autonomy:
   human_checkpoint: none     # none | end-of-story | retrospective
+  # Recuperação quando o advisor recomenda bmad-quick-dev / bmad-correct-course:
+  #   tiered: quick-dev roda autônomo, correct-course pausa p/ aprovação (default)
+  #   pause:  ambos pausam   |   auto: ambos rodam sem pausar
+  recovery_policy: tiered
 
 max_turns_per_phase: 40
+max_recoveries_per_story: 2  # anti-loop: teto de recuperações por story
 log_dir: .autopilot/logs
 
 phases:

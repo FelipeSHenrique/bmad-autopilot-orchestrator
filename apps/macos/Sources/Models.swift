@@ -182,7 +182,7 @@ struct DecisionRow: Identifiable {
 
 // Entrada da "conversa" (transcript) renderizada no console.
 struct TranscriptEntry: Identifiable {
-    enum Kind { case phase, message, tool, ask, decision, git, status, note, error }
+    enum Kind { case phase, message, tool, ask, decision, git, status, note, error, recovery }
     let id = UUID()
     var kind: Kind
     var role: String = ""        // "worker" | "advisor"
@@ -195,4 +195,11 @@ struct GitRow: Identifiable {
     let id = UUID()
     let op: String
     let result: String
+}
+
+// Recomendação de recuperação aguardando decisão humana (correct-course no modo tiered).
+struct RecoveryItem: Identifiable {
+    let id = UUID()
+    let skill: String
+    let reason: String
 }

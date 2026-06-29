@@ -66,7 +66,9 @@ class Recorder:
         self.queries: list[tuple[str, str]] = []
         self.interrupts = 0
         self.answers: Any = None
-        self.worker_mode = "ask"           # "ask" | "block"
+        self.worker_mode = "ask"           # "ask" | "block" | "loop"
+        self.advisor_escalate: str | None = None   # skill que o advisor pede (recuperação)
+        self.advisor_escalate_once = True          # consome após a 1ª decisão
 
 
 _REC: Recorder | None = None
@@ -98,6 +100,10 @@ class FakeClaudeSDKClient:
                 "answers": {QUESTIONS[0]["question"]: QUESTIONS[0]["options"][0]["label"]},
                 "rationale": "Repository pattern alinhado ao padrão existente no repo.",
             }
+            if _REC.advisor_escalate:
+                answer["escalate"] = {"skill": _REC.advisor_escalate, "reason": "fake escalation"}
+                if _REC.advisor_escalate_once:
+                    _REC.advisor_escalate = None
             yield FakeAssistantMessage([FakeTextBlock("```json\n" + json.dumps(answer) + "\n```")])
             yield FakeResultMessage()
             return

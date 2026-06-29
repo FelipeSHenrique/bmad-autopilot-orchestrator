@@ -38,6 +38,7 @@ final class RunStore: ObservableObject {
     @Published var messages: [String] = []
     @Published var liveStatus: [String: String] = [:]   // key -> status (sobrepõe detect)
     @Published var checkpointLabel: String?
+    @Published var recovery: RecoveryItem?            // recuperação aguardando decisão
     @Published var showingSettings = false
 
     static func storyPhases() -> [PhaseRow] {
@@ -167,7 +168,7 @@ final class RunStore: ObservableObject {
         workerLog = ""; advisorLog = ""
         transcript = []; curMsgIndex = nil; curRole = nil
         decisions = []; gitRows = []; messages = []
-        checkpointLabel = nil
+        checkpointLabel = nil; recovery = nil
     }
 
     // ---- montagem da conversa (transcript) -----------------------------
@@ -215,6 +216,7 @@ final class RunStore: ObservableObject {
             phases = (ev.scope == "epic") ? RunStore.epicPhases() : RunStore.storyPhases()
         case "run_ended":
             running = false
+            recovery = nil   // dispensa qualquer sheet de recuperação pendente
             // para qualquer spinner: fase que ficou "running" volta a pending
             for i in phases.indices where phases[i].state == .running {
                 phases[i].state = .pending
@@ -265,6 +267,15 @@ final class RunStore: ObservableObject {
         case "checkpoint_hit":
             checkpointLabel = ev.label
             addEntry(.init(kind: .note, title: "checkpoint", subtitle: ev.label ?? ""))
+        case "recovery_recommended":
+            let sk = ev.skill ?? "", rs = ev.reason ?? ""
+            recovery = RecoveryItem(skill: sk, reason: rs)
+            addEntry(.init(kind: .recovery, title: "Recuperação recomendada: \(sk)",
+                           subtitle: "aguardando sua decisão…", text: rs))
+        case "recovery_started":
+            recovery = nil   // já resolvido (auto ou aprovado)
+            addEntry(.init(kind: .recovery, title: "Recuperação iniciada: \(ev.skill ?? "")",
+                           subtitle: "rodando…", text: ev.reason ?? ""))
         case "log":
             messages.append(ev.message ?? "")
             addEntry(.init(kind: .note, text: ev.message ?? ""))

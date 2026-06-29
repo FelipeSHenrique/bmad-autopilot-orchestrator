@@ -9,8 +9,8 @@ import asyncio
 from . import events as ev
 from . import router
 from .advisor import Advisor
-from .config import RETROSPECTIVE, Config
-from .events import EventSink, RunControl, StopRequested
+from .config import CORRECT_COURSE, RETROSPECTIVE, Config
+from .events import Escalation, EventSink, RunControl, StopRequested
 from .git_rules import GitContext, GitRunner, apply_phase
 from .status import SprintStatus, parse_story_key
 from .worker import run_phase
@@ -33,15 +33,62 @@ async def _run_one_phase(
     skill: str, target_id: str, cfg: Config, advisor_cls,
     sink: EventSink, control: RunControl, dry_run: bool,
     done_predicate=None,
-) -> None:
+) -> Escalation | None:
+    """Roda uma fase. Devolve a escalação que o advisor pediu (se houver) — o
+    canal pelo qual o loop fica sabendo que uma skill de recuperação é necessária."""
     if dry_run:
         # Pura simulação: não abre sessão Claude (advisor) nenhuma.
         await run_phase(skill, target_id, cfg, None, sink, control, dry_run=True)
-        return
+        return None
     # Uma sessão advisor por fase (contexto próprio).
     async with advisor_cls(cfg, sink) as advisor:
         await run_phase(skill, target_id, cfg, advisor, sink, control,
                         dry_run=False, done_predicate=done_predicate)
+        return advisor.last_escalation
+
+
+async def _ask_recovery(esc: Escalation, sink: EventSink, control: RunControl) -> bool:
+    """Surface a escalação ao humano e devolve True se ele aprovar rodar."""
+    await sink.emit(ev.recovery_recommended(esc.skill, esc.reason))
+    if control.interactive_cli:
+        try:
+            ans = input(
+                f"\n⚠ recuperação recomendada: {esc.skill} — {esc.reason}\n"
+                "  rodar agora? [y/N] ")
+        except EOFError:
+            ans = ""
+        return ans.strip().lower().startswith("y")
+    return (await control.wait_recovery_choice()) == "run"
+
+
+async def _handle_recovery(
+    esc: Escalation, story_key: str, epic_id: str, cfg: Config,
+    runner: GitRunner, sink: EventSink, control: RunControl,
+) -> bool:
+    """Aplica a política de recuperação à escalação do advisor.
+
+    Política `tiered` (default): quick-dev roda autônomo; correct-course pausa p/
+    aprovação humana. `pause`: ambos pausam. `auto`: ambos rodam.
+    Retorna True se a skill de recuperação RODOU (caller deve re-avaliar o status),
+    False se foi pulada (caller segue o fluxo normal da fase)."""
+    policy = cfg.autonomy.recovery_policy
+    is_plan = esc.skill == CORRECT_COURSE
+    if policy == "auto":
+        run_it = True
+    elif policy == "pause":
+        run_it = await _ask_recovery(esc, sink, control)
+    else:  # tiered
+        run_it = (not is_plan) or await _ask_recovery(esc, sink, control)
+
+    if not run_it:
+        await sink.emit(ev.log(f"recuperação pulada: {esc.skill}", "warn"))
+        return False
+
+    await sink.emit(ev.recovery_started(esc.skill, esc.reason))
+    await _run_one_phase(esc.skill, story_key, cfg, Advisor, sink, control, dry_run=False)
+    ctx = GitContext(story_id=story_key, epic_id=epic_id)
+    await apply_phase(cfg.phase(esc.skill), runner, ctx, sink)
+    return True
 
 
 async def process_story(
@@ -62,12 +109,26 @@ async def process_story(
             await apply_phase(cfg.phase(phase.skill), runner, ctx, sink)
         return
 
+    recoveries = 0
     while (phase := status.next_phase(story_key)) is not None:
         control.raise_if_stopped()
         target = phase.next_status
         done_pred = lambda t=target: status.story_status(story_key) == t
-        await _run_one_phase(phase.skill, story_key, cfg, Advisor, sink, control,
-                             dry_run, done_pred)
+        esc = await _run_one_phase(phase.skill, story_key, cfg, Advisor, sink, control,
+                                   dry_run, done_pred)
+
+        # Escalação do advisor: roda skill de recuperação (ou pausa) ANTES de
+        # avançar o status — senão marcaríamos como feito algo não resolvido.
+        if esc is not None and not dry_run:
+            if recoveries >= cfg.max_recoveries_per_story:
+                await sink.emit(ev.error(
+                    f"teto de recuperações ({cfg.max_recoveries_per_story}) atingido "
+                    f"em {story_key}; seguindo sem recuperar"))
+            else:
+                recoveries += 1
+                if await _handle_recovery(esc, story_key, epic_id, cfg, runner, sink, control):
+                    continue  # recuperação rodou -> re-avalia o status (não força avanço)
+                # pulada -> cai no fluxo normal (aceita o resultado da fase)
 
         frm = status.story_status(story_key)
         status.set_status(story_key, phase.next_status)
@@ -100,8 +161,10 @@ async def run_epic(
             await _checkpoint(f"epic {epic_id} concluída", cfg, sink, control)
         retro_key = status.retrospective_key(epic_id)
         retro_done = lambda: status.story_status(retro_key) == "done"
-        await _run_one_phase(RETROSPECTIVE, str(epic_id), cfg, Advisor, sink, control,
-                             dry_run, retro_done)
+        esc = await _run_one_phase(RETROSPECTIVE, str(epic_id), cfg, Advisor, sink, control,
+                                   dry_run, retro_done)
+        if esc is not None and not dry_run:
+            await _handle_recovery(esc, retro_key, str(epic_id), cfg, runner, sink, control)
         try:
             status.set_status(retro_key, "done")
             await sink.emit(ev.status_changed(retro_key, "done"))

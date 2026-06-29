@@ -24,6 +24,9 @@ struct ContentView: View {
         )) { item in
             CheckpointSheet(label: item.label)
         }
+        .sheet(item: $store.recovery) { item in
+            RecoverySheet(item: item)
+        }
         .sheet(isPresented: $store.showingSettings) {
             SettingsView().environmentObject(store)
         }
@@ -374,6 +377,23 @@ struct TranscriptRow: View {
         case .error:
             Label(entry.text, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption).foregroundStyle(.red)
+
+        case .recovery:
+            VStack(alignment: .leading, spacing: 4) {
+                Label(entry.title, systemImage: "wrench.and.screwdriver.fill")
+                    .font(.caption.weight(.bold)).foregroundStyle(.orange)
+                if !entry.subtitle.isEmpty {
+                    Text(entry.subtitle).font(.caption).foregroundStyle(.secondary)
+                }
+                if !entry.text.isEmpty {
+                    Text(entry.text).font(.caption).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(.orange.opacity(0.4)))
         }
     }
 }
@@ -457,12 +477,49 @@ struct CheckpointSheet: View {
     }
 }
 
+// MARK: - Sheet de recuperação (correct-course / quick-dev no modo pausa)
+
+struct RecoverySheet: View {
+    @EnvironmentObject var store: RunStore
+    let item: RecoveryItem
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "wrench.and.screwdriver.fill")
+                .font(.largeTitle).foregroundStyle(.orange)
+            Text("Recuperação recomendada").font(.title2.bold())
+            Text(item.skill).font(.headline).foregroundStyle(.orange)
+            if !item.reason.isEmpty {
+                Text(item.reason).font(.callout).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center).textSelection(.enabled)
+            }
+            Text("O advisor sugere rodar este skill de recuperação antes de continuar.")
+                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            HStack {
+                Button("Parar", role: .destructive) {
+                    store.control("stop"); store.recovery = nil
+                }
+                Button("Pular") {
+                    store.control("skip"); store.recovery = nil
+                }
+                Button("Rodar recuperação") {
+                    store.control("approve"); store.recovery = nil
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(28)
+        .frame(width: 420)
+    }
+}
+
 // MARK: - Settings (prompt do advisor + fluxo de git, por projeto)
 
 struct SettingsView: View {
     @EnvironmentObject var store: RunStore
     @Environment(\.dismiss) private var dismiss
     @State private var advisorPrompt = ""
+    @State private var recoveryPolicy = "tiered"
     @State private var optionsJSON = ""   // invoke_template, human_checkpoint, models, phases
     @State private var loading = true
     @State private var parseError: String?
@@ -481,6 +538,13 @@ struct SettingsView: View {
                     .font(.system(.callout, design: .monospaced))
                     .frame(minHeight: 150)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+
+                Picker("Recuperação (quick-dev / correct-course)", selection: $recoveryPolicy) {
+                    Text("Tiered — quick-dev auto, correct-course pausa").tag("tiered")
+                    Text("Pausar — sempre pedir aprovação").tag("pause")
+                    Text("Auto — rodar ambos sem pausar").tag("auto")
+                }
+                .help("Como tratar quando o advisor recomenda um skill de recuperação no meio do fluxo.")
 
                 HStack {
                     Text("Fluxo de git + opções (JSON)").font(.headline)
@@ -514,7 +578,9 @@ struct SettingsView: View {
               var obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else { loading = false; return }
         advisorPrompt = obj["advisor_prompt"] as? String ?? ""
+        recoveryPolicy = obj["recovery_policy"] as? String ?? "tiered"
         obj.removeValue(forKey: "advisor_prompt")
+        obj.removeValue(forKey: "recovery_policy")
         obj.removeValue(forKey: "has_override_file")
         optionsJSON = prettyJSON(obj)
         loading = false
@@ -527,6 +593,7 @@ struct SettingsView: View {
             return
         }
         obj["advisor_prompt"] = advisorPrompt
+        obj["recovery_policy"] = recoveryPolicy
         guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return }
         Task { if await store.saveConfigData(data) { dismiss() } }
     }

@@ -15,7 +15,14 @@ DEV_STORY = "bmad-dev-story"
 CODE_REVIEW = "bmad-code-review"
 RETROSPECTIVE = "bmad-retrospective"
 
+# Skills de RECUPERAÇÃO (fora do lifecycle) — disparadas por escalação do advisor.
+QUICK_DEV = "bmad-quick-dev"            # correção de código contida
+CORRECT_COURSE = "bmad-correct-course"  # correção de planejamento (reescreve plano)
+RECOVERY_SKILLS = (QUICK_DEV, CORRECT_COURSE)
+
 HumanCheckpoint = Literal["none", "end-of-story", "retrospective"]
+# tiered: quick-dev autônomo, correct-course pausa | pause: ambos pausam | auto: ambos rodam
+RecoveryPolicy = Literal["tiered", "pause", "auto"]
 
 # Persona padrão do advisor (editável por projeto via autopilot.yaml).
 DEFAULT_ADVISOR_PROMPT = """\
@@ -32,6 +39,16 @@ padrões já existentes no repositório, à arquitetura definida e aos critério
 de aceite da story/epic. Seja decisivo: nunca devolva "não sei" ou peça ajuda \
 ao usuário — não há humano disponível. Quando faltar informação, escolha a \
 opção mais conservadora e segura e explique o porquê.
+
+ESCALAÇÃO (recuperação): se a fase atual do lifecycle NÃO consegue resolver a \
+situação e o caminho certo é rodar uma skill de recuperação do BMAD, sinalize \
+no campo opcional "escalate" do seu JSON:
+- "bmad-quick-dev": quando há um BUG/ajuste de código focado que a fase atual \
+não cobre (correção contida, sem mudar o plano).
+- "bmad-correct-course": quando o problema é de PLANEJAMENTO/requisitos \
+(precisa reescrever epics/PRD/arquitetura, adicionar/remover stories).
+Só escale quando for realmente necessário; na dúvida, NÃO escale (omita o \
+campo) e responda a decisão normalmente.
 """
 
 
@@ -64,6 +81,7 @@ class Models:
 @dataclass
 class Autonomy:
     human_checkpoint: HumanCheckpoint = "none"
+    recovery_policy: RecoveryPolicy = "tiered"
 
 
 @dataclass
@@ -81,6 +99,7 @@ class Config:
     log_dir: str = ".autopilot/logs"
     max_turns_per_phase: int = 40
     max_decisions_per_phase: int = 12   # anti-loop: teto de decisões/perguntas por fase
+    max_recoveries_per_story: int = 2   # anti-loop: teto de recuperações por story
     advisor_prompt: str | None = None   # None => DEFAULT_ADVISOR_PROMPT
 
     @property
@@ -127,7 +146,10 @@ def load_config(path: str | Path) -> Config:
     )
 
     autonomy_raw = data.get("autonomy", {}) or {}
-    autonomy = Autonomy(human_checkpoint=autonomy_raw.get("human_checkpoint", "none"))
+    autonomy = Autonomy(
+        human_checkpoint=autonomy_raw.get("human_checkpoint", "none"),
+        recovery_policy=autonomy_raw.get("recovery_policy", "tiered"),
+    )
 
     phases: dict[str, PhaseConfig] = {}
     for name, pdata in (data.get("phases", {}) or {}).items():
@@ -173,6 +195,12 @@ def default_phases() -> dict[str, PhaseConfig]:
         RETROSPECTIVE: PhaseConfig(RETROSPECTIVE, [
             GitAction("commit", "chore: retrospective epic-{epic_id}"),
         ]),
+        QUICK_DEV: PhaseConfig(QUICK_DEV, [
+            GitAction("commit", "fix: quick-dev {story_id}"),
+        ]),
+        CORRECT_COURSE: PhaseConfig(CORRECT_COURSE, [
+            GitAction("commit", "chore: correct-course epic-{epic_id}"),
+        ]),
     }
 
 
@@ -193,6 +221,12 @@ def safe_phases() -> dict[str, PhaseConfig]:
         RETROSPECTIVE: PhaseConfig(RETROSPECTIVE, [
             GitAction("commit", "chore: retrospective epic-{epic_id}"),
         ]),
+        QUICK_DEV: PhaseConfig(QUICK_DEV, [
+            GitAction("commit", "fix: quick-dev {story_id}"),
+        ]),
+        CORRECT_COURSE: PhaseConfig(CORRECT_COURSE, [
+            GitAction("commit", "chore: correct-course epic-{epic_id}"),
+        ]),
     }
 
 
@@ -207,6 +241,7 @@ def config_for_project(
     human_checkpoint: HumanCheckpoint | None = None,
     phases: dict[str, PhaseConfig] | None = None,
     advisor_prompt: str | None = None,
+    recovery_policy: RecoveryPolicy | None = None,
 ) -> Config:
     """Constrói uma Config programaticamente (usada pelo backend/app)."""
     return Config(
@@ -218,7 +253,10 @@ def config_for_project(
             worker=worker_model or Models.worker,
             advisor=advisor_model or Models.advisor,
         ),
-        autonomy=Autonomy(human_checkpoint=human_checkpoint or "none"),
+        autonomy=Autonomy(
+            human_checkpoint=human_checkpoint or "none",
+            recovery_policy=recovery_policy or "tiered",
+        ),
         phases=phases if phases is not None else default_phases(),
         advisor_prompt=advisor_prompt,
     )
@@ -260,6 +298,10 @@ def load_project_overrides(project_dir: str | Path) -> dict[str, Any]:
         out["human_checkpoint"] = data["autonomy"]["human_checkpoint"]
     elif data.get("human_checkpoint"):
         out["human_checkpoint"] = data["human_checkpoint"]
+    if (data.get("autonomy") or {}).get("recovery_policy"):
+        out["recovery_policy"] = data["autonomy"]["recovery_policy"]
+    elif data.get("recovery_policy"):
+        out["recovery_policy"] = data["recovery_policy"]
     if data.get("phases"):
         out["phases"] = {
             name: PhaseConfig(name=name, git=_parse_git((pd or {}).get("git")))

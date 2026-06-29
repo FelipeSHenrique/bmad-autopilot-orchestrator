@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import fakes
-from autopilot.config import config_for_project, safe_phases
+from autopilot.config import CORRECT_COURSE, QUICK_DEV, config_for_project, safe_phases
 from autopilot.events import EventSink, RunControl
 from autopilot.loop import run as run_loop
 from autopilot.status import SprintStatus
@@ -82,6 +82,105 @@ def test_epic_marks_label_done(git_project: Path, fake_claude):
     assert ss.story_status("epic-7-retrospective") == "done"
     assert ss.story_status("epic-7") == "done"   # rótulo da epic atualizado
     assert ss.epic_complete(7)
+
+
+def test_recovery_tiered_runs_quick_dev(git_project: Path, fake_claude):
+    """Política 'tiered': escalação para quick-dev (código) roda AUTÔNOMA, sem pausar."""
+    rec = fake_claude
+    rec.advisor_escalate = QUICK_DEV
+    cfg = config_for_project(git_project, phases=safe_phases())  # recovery_policy=tiered
+    sink = EventSink()
+    kinds: list[str] = []
+    started: list[str] = []
+    sink.add_callback(lambda e: (kinds.append(e.kind),
+                                 started.append(e.data.get("skill"))
+                                 if e.kind == "recovery_started" else None))
+
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    assert QUICK_DEV in started                  # rodou o quick-dev autônomo
+    assert "recovery_recommended" not in kinds    # tiered NÃO pausa p/ quick-dev
+    assert SprintStatus(git_project / SS_REL).story_status("7-2-create-api") == "done"
+
+
+def test_recovery_correct_course_pauses(git_project: Path, fake_claude):
+    """Política 'tiered': escalação para correct-course (plano) PAUSA e espera o humano."""
+    rec = fake_claude
+    rec.advisor_escalate = CORRECT_COURSE
+    cfg = config_for_project(git_project, phases=safe_phases())
+    sink = EventSink()
+    kinds: list[str] = []
+    started: list[str] = []
+    sink.add_callback(lambda e: (kinds.append(e.kind),
+                                 started.append(e.data.get("skill"))
+                                 if e.kind == "recovery_started" else None))
+    control = RunControl()
+
+    async def go():
+        task = asyncio.create_task(run_loop(
+            cfg, story="7-2-create-api", epic=None, dry_run=False,
+            sink=sink, control=control))
+        for _ in range(200):                       # espera a pausa aparecer
+            if "recovery_recommended" in kinds:
+                break
+            await asyncio.sleep(0.02)
+        assert "recovery_recommended" in kinds      # pausou, esperando escolha
+        assert not task.done()                      # bloqueado no wait_recovery_choice
+        control.choose_recovery("run")              # humano aprova rodar
+        await task
+
+    asyncio.run(go())
+    assert CORRECT_COURSE in started
+    assert SprintStatus(git_project / SS_REL).story_status("7-2-create-api") == "done"
+
+
+def test_recovery_correct_course_skip(git_project: Path, fake_claude):
+    """Pular a recuperação: não roda a skill, aceita o resultado da fase e segue."""
+    rec = fake_claude
+    rec.advisor_escalate = CORRECT_COURSE
+    cfg = config_for_project(git_project, phases=safe_phases())
+    sink = EventSink()
+    kinds: list[str] = []
+    sink.add_callback(lambda e: kinds.append(e.kind))
+    control = RunControl()
+
+    async def go():
+        task = asyncio.create_task(run_loop(
+            cfg, story="7-2-create-api", epic=None, dry_run=False,
+            sink=sink, control=control))
+        for _ in range(200):
+            if "recovery_recommended" in kinds:
+                break
+            await asyncio.sleep(0.02)
+        control.choose_recovery("skip")
+        await task
+
+    asyncio.run(go())
+    assert "recovery_started" not in kinds          # não rodou a recuperação
+    assert SprintStatus(git_project / SS_REL).story_status("7-2-create-api") == "done"
+
+
+def test_recovery_cap_prevents_loop(git_project: Path, fake_claude):
+    """Advisor escalando SEMPRE não pode loopar: o teto max_recoveries_per_story corta."""
+    rec = fake_claude
+    rec.advisor_escalate = QUICK_DEV
+    rec.advisor_escalate_once = False               # escala em toda decisão
+    cfg = config_for_project(git_project, phases=safe_phases())
+    cfg.max_recoveries_per_story = 2
+    sink = EventSink()
+    kinds: list[str] = []
+    sink.add_callback(lambda e: kinds.append(e.kind))
+
+    async def go():
+        await asyncio.wait_for(
+            run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                     sink=sink, control=RunControl()),
+            timeout=30)   # se loopar de verdade, estoura aqui
+
+    asyncio.run(go())
+    assert kinds[-1] == "run_ended"
+    assert sum(1 for k in kinds if k == "recovery_started") <= 2  # respeitou o teto
 
 
 def test_stop_cancels_mid_turn(git_project: Path, fake_claude):

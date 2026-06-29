@@ -26,6 +26,14 @@ class Event:
         return {"kind": self.kind, "ts": self.ts, **self.data}
 
 
+@dataclass
+class Escalation:
+    """Pedido do advisor para rodar uma skill de recuperação (fora do lifecycle)."""
+
+    skill: str            # "bmad-quick-dev" | "bmad-correct-course"
+    reason: str = ""
+
+
 # Construtores (mantêm os call-sites legíveis e o vocabulário consistente).
 def run_started(scope: str, target: str, dry_run: bool) -> Event:
     return Event("run_started", {"scope": scope, "target": target, "dry_run": dry_run})
@@ -73,6 +81,14 @@ def status_changed(key: str, to: str, frm: str | None = None) -> Event:
 
 def checkpoint_hit(label: str) -> Event:
     return Event("checkpoint_hit", {"label": label})
+
+
+def recovery_recommended(skill: str, reason: str = "") -> Event:
+    return Event("recovery_recommended", {"skill": skill, "reason": reason})
+
+
+def recovery_started(skill: str, reason: str = "") -> Event:
+    return Event("recovery_started", {"skill": skill, "reason": reason})
 
 
 def log(message: str, level: str = "info") -> Event:
@@ -144,6 +160,7 @@ class RunControl:
         self._pause.set()  # set = rodando; clear = pausado
         self._stop = asyncio.Event()
         self._approve = asyncio.Event()
+        self._recovery_choice: str | None = None   # "run" | "skip"
         self.interactive_cli = interactive_cli
 
     # estado
@@ -170,6 +187,11 @@ class RunControl:
     def approve(self) -> None:
         self._approve.set()
 
+    def choose_recovery(self, action: str) -> None:
+        """Resolve uma pausa de recuperação: 'run' (rodar a skill) | 'skip' (seguir)."""
+        self._recovery_choice = action
+        self._approve.set()
+
     # gates usados pelo loop
     def raise_if_stopped(self) -> None:
         if self._stop.is_set():
@@ -187,6 +209,15 @@ class RunControl:
         self._approve.clear()
         await self._approve.wait()
         self.raise_if_stopped()
+
+    async def wait_recovery_choice(self) -> str:
+        """Aguarda a escolha humana numa pausa de recuperação. Stop levanta
+        StopRequested; sem escolha explícita, assume 'skip' (conservador)."""
+        self._recovery_choice = None
+        self._approve.clear()
+        await self._approve.wait()
+        self.raise_if_stopped()
+        return self._recovery_choice or "skip"
 
 
 # Hook opcional para checkpoints interativos no modo CLI (input bloqueante).
