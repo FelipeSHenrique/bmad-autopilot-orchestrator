@@ -18,7 +18,8 @@ ENTRY="$(mktemp -t autopilot_entry).py"
 cat > "$ENTRY" <<'PY'
 import sys
 from autopilot.__main__ import main
-sys.exit(main(["serve", *sys.argv[1:]]))
+# repassa argv como o CLI 'autopilot' (o caller passa: serve --port N)
+sys.exit(main(sys.argv[1:]))
 PY
 
 mkdir -p "$RES_DIR"
@@ -28,6 +29,8 @@ mkdir -p "$RES_DIR"
   --collect-all claude_agent_sdk \
   --collect-all fastapi \
   --collect-all uvicorn \
+  --collect-all ruamel.yaml \
+  --collect-all yaml \
   --collect-submodules autopilot \
   --paths "$REPO_ROOT" \
   --distpath "$RES_DIR" \
