@@ -340,6 +340,23 @@ def test_connection_lost_via_exception(git_project: Path, fake_claude):
     assert "7-2-create-api" in _markers(git_project)     # retomável, não perdeu o trabalho
 
 
+def test_status_changed_emitted_for_visibility(git_project: Path, fake_claude):
+    """As transições de status devem ser EMITIDAS ao vivo (visibilidade no app),
+    mesmo a skill sendo a dona da escrita do sprint-status."""
+    cfg = config_for_project(git_project, phases=safe_phases())
+    sink = EventSink()
+    transitions: list[tuple] = []
+    sink.add_callback(lambda e: transitions.append((e.data.get("from"), e.data.get("to")))
+                      if e.kind == "status_changed" else None)
+
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    # 7-2 (ready-for-dev) → dev-story (review) → code-review (done)
+    assert ("ready-for-dev", "review") in transitions
+    assert ("review", "done") in transitions
+
+
 def test_gate_passes_advances(git_project: Path, fake_claude):
     """Gate aprova (default) → emite gate_review e a fase avança normalmente."""
     cfg = config_for_project(git_project, phases=safe_phases())   # enable_gate default True

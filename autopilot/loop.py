@@ -161,6 +161,7 @@ async def process_story(
                 "iterações) — abortando a story para não gastar tokens"))
             break
         target = phase.next_status
+        frm = status.story_status(story_key)   # status ANTES da fase (p/ emitir a transição real)
         done_pred = lambda t=target: status.story_status(story_key) == t
         esc = await _run_one_phase(phase.skill, story_key, cfg, Advisor, sink, control,
                                    dry_run, done_pred)
@@ -178,13 +179,16 @@ async def process_story(
                     continue  # recuperação rodou -> re-avalia o status (não força avanço)
                 # pulada -> cai no fluxo normal (aceita o resultado da fase)
 
-        # A skill do BMAD é a DONA do status. O orquestrador só age como backstop:
-        # se a skill não avançou (frm != alvo), grava e emite o evento real; se a skill
-        # já gravou, não toca (evita reescrever e o evento "de→para" iguais).
-        frm = status.story_status(story_key)
-        if frm != phase.next_status:
+        # A skill do BMAD é a DONA do status (escrita). O orquestrador separa
+        # ESCREVER de EMITIR: só grava como backstop (se a skill não avançou), mas
+        # SEMPRE emite a transição real pra visibilidade ao vivo (app/feed) —
+        # comparando o status de antes com o de depois, não importa quem gravou.
+        cur = status.story_status(story_key)
+        if cur != phase.next_status:                  # skill não avançou -> backstop grava
             status.set_status(story_key, phase.next_status)
-            await sink.emit(ev.status_changed(story_key, phase.next_status, frm))
+            cur = phase.next_status
+        if cur != frm:                                # emite a transição real (visibilidade)
+            await sink.emit(ev.status_changed(story_key, cur, frm))
 
         ctx = GitContext(story_id=story_key, epic_id=epic_id)
         await apply_phase(cfg.phase(phase.skill), runner, ctx, sink)
