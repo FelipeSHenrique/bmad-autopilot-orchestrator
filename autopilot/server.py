@@ -255,6 +255,7 @@ def create_app() -> FastAPI:
             },
             "human_checkpoint": ov.get("human_checkpoint") or "none",
             "recovery_policy": ov.get("recovery_policy") or "tiered",
+            "enable_gate": ov.get("enable_gate", True),
             "phases": phases_to_dict(phases),
             "has_override_file": project_overrides_path(proj["path"]).exists(),
         }
@@ -300,6 +301,7 @@ def create_app() -> FastAPI:
             phases=phases,
             advisor_prompt=ov.get("advisor_prompt"),
             recovery_policy=ov.get("recovery_policy"),
+            enable_gate=ov.get("enable_gate"),
         )
         if body.fresh:   # "começar do zero": descarta sessão(ões) retomável(is)
             if body.scope == "epic":

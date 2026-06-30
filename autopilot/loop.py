@@ -49,9 +49,40 @@ async def _run_one_phase(
         return None
     # Uma sessão advisor por fase (contexto próprio).
     async with advisor_cls(cfg, sink) as advisor:
-        await run_phase(skill, target_id, cfg, advisor, sink, control,
-                        dry_run=False, done_predicate=done_predicate)
+        final_text, sid = await run_phase(skill, target_id, cfg, advisor, sink, control,
+                                          dry_run=False, done_predicate=done_predicate)
+        if cfg.enable_gate:
+            await _run_gate(skill, target_id, cfg, advisor, sink, control,
+                            final_text, sid, done_predicate)
         return advisor.last_escalation
+
+
+async def _run_gate(
+    skill: str, target_id: str, cfg: Config, advisor, sink: EventSink,
+    control: RunControl, final_text: str, sid: str | None, done_predicate,
+) -> None:
+    """Gate de conclusão: o advisor valida o resultado da fase e diz se pode avançar.
+
+    No-go → corrige na MESMA sessão (resume) com o prompt do advisor e revalida.
+    Após `max_gate_rounds` sem aprovar, pausa pro humano (checkpoint)."""
+    rounds = 0
+    while True:
+        v = await advisor.review_phase(skill, target_id, final_text)
+        blockers = v.get("blockers", [])
+        await sink.emit(ev.gate_review(skill, target_id, v["ok"], blockers))
+        if v["ok"]:
+            return
+        rounds += 1
+        if rounds > cfg.max_gate_rounds:   # teto -> pausa pro humano decidir
+            await sink.emit(ev.checkpoint_hit(
+                f"gate bloqueou {skill}:{target_id} — {'; '.join(blockers) or 'pendências'}"))
+            await control.wait_approval()  # aprovar = avança; stop = encerra
+            return
+        await sink.emit(ev.gate_correcting(skill, target_id))   # no-go -> corrige na mesma sessão
+        final_text, sid = await run_phase(
+            skill, target_id, cfg, advisor, sink, control,
+            done_predicate=done_predicate, resume_session=sid,
+            resume_prompt=v.get("corrections") or "Corrija os pontos apontados e conclua a fase.")
 
 
 async def _ask_recovery(esc: Escalation, sink: EventSink, control: RunControl) -> bool:

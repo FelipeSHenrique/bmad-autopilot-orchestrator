@@ -108,19 +108,25 @@ async def run_phase(
     *,
     dry_run: bool = False,
     done_predicate: Callable[[], bool] | None = None,
-) -> None:
+    resume_session: str | None = None,
+    resume_prompt: str | None = None,
+) -> tuple[str, str | None]:
     """Roda uma fase (uma skill) até concluir, respondendo decisões via advisor.
 
     Conclusão é detectada de forma autoritativa por `done_predicate` (status no
     sprint-status.yaml). Um teto de decisões por fase evita loops em skills
-    tagarelas/interativas (ex.: retrospective)."""
+    tagarelas/interativas (ex.: retrospective).
+
+    `resume_session`/`resume_prompt`: reabre uma sessão específica (gate de correção)
+    e injeta o prompt dado em vez de invocar a skill do zero. Devolve
+    (texto_final, session_id)."""
     await sink.emit(ev.phase_started(skill, target_id))
     invocation = invoke_string(cfg, skill, target_id)
 
     if dry_run:
         await sink.emit(ev.log(f"[dry-run] worker rodaria: {invocation!r}"))
         await sink.emit(ev.phase_ended(skill, target_id))
-        return
+        return "", None
 
     if advisor is not None:
         advisor.current_phase = skill  # decisões/memória ficam atribuídas a esta fase
@@ -148,10 +154,10 @@ async def run_phase(
             )
         return PermissionResultAllow(updated_input=input_data)
 
-    # Resume de sessão: se há um marcador desta fase (dentro do TTL), reabre a
-    # sessão exata; senão, fixa um session_id novo e registra o marcador.
-    resume_id = resume.marker_for(cfg, target_id, skill, cfg.resume_ttl_hours)
-    session_id = None if resume_id else str(uuid.uuid4())
+    # Resume de sessão: sessão explícita (gate de correção) ou marcador desta fase
+    # (dentro do TTL); senão, fixa um session_id novo. `active_sid` é o id em uso.
+    resume_id = resume_session or resume.marker_for(cfg, target_id, skill, cfg.resume_ttl_hours)
+    active_sid = resume_id or str(uuid.uuid4())
 
     common = dict(
         cwd=str(cfg.bmad_project_dir),
@@ -165,18 +171,19 @@ async def run_phase(
         model=cfg.models.worker,
     )
     options = (ClaudeAgentOptions(resume=resume_id, **common) if resume_id
-               else ClaudeAgentOptions(session_id=session_id, **common))
+               else ClaudeAgentOptions(session_id=active_sid, **common))
 
     client = ClaudeSDKClient(options=options)
     await client.connect()
+    resume.set_marker(cfg, target_id, skill, active_sid)  # sessão já existe (pós-connect)
+    last_text = ""
     try:
         if resume_id:
             await sink.emit(ev.phase_resumed(skill, target_id))
-            await client.query(
+            await client.query(resume_prompt or
                 "Você foi interrompido no meio desta fase. CONTINUE exatamente de onde "
                 "parou e conclua a fase; atualize o sprint-status ao terminar.")
         else:
-            resume.set_marker(cfg, target_id, skill, session_id)  # sessão já existe (pós-connect)
             await client.query(invocation)
         nudged = False  # (B) já demos um empurrão neste impasse?
         for _ in range(cfg.max_turns_per_phase):
@@ -248,6 +255,7 @@ async def run_phase(
     # Conclusão normal: a fase terminou, não há o que resumir.
     resume.clear_marker(cfg, target_id)
     await sink.emit(ev.phase_ended(skill, target_id))
+    return last_text, active_sid
 
 
 async def _drain_turn(client: ClaudeSDKClient, sink: EventSink) -> str:

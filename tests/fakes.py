@@ -82,6 +82,8 @@ class Recorder:
         self.worker_mode = "ask"           # "ask" | "block" | "loop"
         self.token_limit_mode: str | None = None  # None | "ratelimit" | "result429"
         self.sessions: list[dict] = []     # opções de sessão por client worker (resume/session_id)
+        self.gate_verdicts: list[dict] = []  # vereditos do gate, em ordem ({ok,blockers,corrections})
+        self.gate_calls = 0                # quantas review_phase já foram respondidas
         self.advisor_escalate: str | None = None   # skill que o advisor pede (recuperação)
         self.advisor_escalate_once = True          # consome após a 1ª decisão
 
@@ -111,11 +113,21 @@ class FakeClaudeSDKClient:
 
     async def query(self, prompt: str) -> None:
         self._turn += 1
+        self._last_prompt = prompt
         _REC.queries.append((self.role, prompt))
 
     async def receive_response(self):
         if self.role == "advisor":
             yield _delta("decidindo...")
+            # Gate de conclusão: prompt de review_phase -> devolve veredito do gate.
+            if "Valide se está tudo certo" in getattr(self, "_last_prompt", ""):
+                i = _REC.gate_calls
+                _REC.gate_calls += 1
+                v = (_REC.gate_verdicts[i] if i < len(_REC.gate_verdicts)
+                     else {"ok": True, "blockers": [], "corrections": ""})
+                yield FakeAssistantMessage([FakeTextBlock("```json\n" + json.dumps(v) + "\n```")])
+                yield FakeResultMessage()
+                return
             answer = {
                 "answers": {QUESTIONS[0]["question"]: QUESTIONS[0]["options"][0]["label"]},
                 "rationale": "Repository pattern alinhado ao padrão existente no repo.",

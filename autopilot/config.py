@@ -102,6 +102,8 @@ class Config:
     max_recoveries_per_story: int = 2   # anti-loop: teto de recuperações por story
     max_phase_iters_per_story: int = 12 # anti-loop: teto de iterações de fase por story
     resume_ttl_hours: int = 24          # validade do marcador de resume de sessão
+    enable_gate: bool = True            # advisor revisa o resultado de cada fase antes de avançar
+    max_gate_rounds: int = 2            # rodadas de correção do gate antes de pausar pro humano
     advisor_prompt: str | None = None   # None => DEFAULT_ADVISOR_PROMPT
 
     @property
@@ -170,6 +172,7 @@ def load_config(path: str | Path) -> Config:
         phases=phases,
         log_dir=data.get("log_dir", Config.log_dir),
         max_turns_per_phase=int(data.get("max_turns_per_phase", Config.max_turns_per_phase)),
+        enable_gate=bool(data.get("enable_gate", Config.enable_gate)),
     )
     return cfg
 
@@ -244,6 +247,7 @@ def config_for_project(
     phases: dict[str, PhaseConfig] | None = None,
     advisor_prompt: str | None = None,
     recovery_policy: RecoveryPolicy | None = None,
+    enable_gate: bool | None = None,
 ) -> Config:
     """Constrói uma Config programaticamente (usada pelo backend/app)."""
     return Config(
@@ -261,6 +265,7 @@ def config_for_project(
         ),
         phases=phases if phases is not None else default_phases(),
         advisor_prompt=advisor_prompt,
+        enable_gate=True if enable_gate is None else enable_gate,
     )
 
 
@@ -304,6 +309,8 @@ def load_project_overrides(project_dir: str | Path) -> dict[str, Any]:
         out["recovery_policy"] = data["autonomy"]["recovery_policy"]
     elif data.get("recovery_policy"):
         out["recovery_policy"] = data["recovery_policy"]
+    if "enable_gate" in data:
+        out["enable_gate"] = bool(data["enable_gate"])
     if data.get("phases"):
         out["phases"] = {
             name: PhaseConfig(name=name, git=_parse_git((pd or {}).get("git")))

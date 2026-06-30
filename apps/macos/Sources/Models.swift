@@ -188,7 +188,7 @@ struct DecisionRow: Identifiable {
 
 // Entrada da "conversa" (transcript) renderizada no console.
 struct TranscriptEntry: Identifiable {
-    enum Kind { case phase, message, tool, ask, decision, git, status, note, error, recovery }
+    enum Kind { case phase, message, tool, ask, decision, git, status, note, error, recovery, gate }
     let id = UUID()
     var kind: Kind
     var role: String = ""        // "worker" | "advisor"

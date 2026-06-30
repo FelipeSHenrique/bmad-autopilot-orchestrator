@@ -25,6 +25,8 @@ autonomy:
 max_turns_per_phase: 40
 max_recoveries_per_story: 2  # anti-loop: teto de recuperações por story
 resume_ttl_hours: 24         # validade do marcador de resume de sessão (continuar do ponto exato)
+enable_gate: true            # advisor valida o resultado de cada fase (e itens deferidos) antes de avançar
+max_gate_rounds: 2           # rodadas de correção do gate antes de pausar pro humano
 log_dir: .autopilot/logs
 
 phases:

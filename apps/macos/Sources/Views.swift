@@ -467,6 +467,19 @@ struct TranscriptRow: View {
             Label(entry.text, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption).foregroundStyle(.red)
 
+        case .gate:
+            let ok = entry.text.isEmpty
+            VStack(alignment: .leading, spacing: 4) {
+                Label(entry.title, systemImage: ok ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.bold)).foregroundStyle(ok ? .green : .orange)
+                if !entry.text.isEmpty {
+                    Text(entry.text).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+            }
+            .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+            .background((ok ? Color.green : Color.orange).opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke((ok ? Color.green : Color.orange).opacity(0.35)))
+
         case .recovery:
             VStack(alignment: .leading, spacing: 4) {
                 Label(entry.title, systemImage: "wrench.and.screwdriver.fill")
@@ -609,6 +622,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var advisorPrompt = ""
     @State private var recoveryPolicy = "tiered"
+    @State private var enableGate = true
     @State private var optionsJSON = ""   // invoke_template, human_checkpoint, models, phases
     @State private var loading = true
     @State private var parseError: String?
@@ -634,6 +648,9 @@ struct SettingsView: View {
                     Text("Auto — rodar ambos sem pausar").tag("auto")
                 }
                 .help("Como tratar quando o advisor recomenda um skill de recuperação no meio do fluxo.")
+
+                Toggle("Gate de conclusão (advisor valida cada fase antes de avançar)", isOn: $enableGate)
+                    .help("Ao fim de cada fase, o advisor revisa o resultado + itens deferidos e diz se pode seguir; reprovou, corrige na mesma sessão.")
 
                 HStack {
                     Text("Fluxo de git + opções (JSON)").font(.headline)
@@ -668,8 +685,10 @@ struct SettingsView: View {
         else { loading = false; return }
         advisorPrompt = obj["advisor_prompt"] as? String ?? ""
         recoveryPolicy = obj["recovery_policy"] as? String ?? "tiered"
+        enableGate = obj["enable_gate"] as? Bool ?? true
         obj.removeValue(forKey: "advisor_prompt")
         obj.removeValue(forKey: "recovery_policy")
+        obj.removeValue(forKey: "enable_gate")
         obj.removeValue(forKey: "has_override_file")
         optionsJSON = prettyJSON(obj)
         loading = false
@@ -683,6 +702,7 @@ struct SettingsView: View {
         }
         obj["advisor_prompt"] = advisorPrompt
         obj["recovery_policy"] = recoveryPolicy
+        obj["enable_gate"] = enableGate
         guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return }
         Task { if await store.saveConfigData(data) { dismiss() } }
     }

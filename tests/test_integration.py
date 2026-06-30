@@ -340,6 +340,75 @@ def test_connection_lost_via_exception(git_project: Path, fake_claude):
     assert "7-2-create-api" in _markers(git_project)     # retomável, não perdeu o trabalho
 
 
+def test_gate_passes_advances(git_project: Path, fake_claude):
+    """Gate aprova (default) → emite gate_review e a fase avança normalmente."""
+    cfg = config_for_project(git_project, phases=safe_phases())   # enable_gate default True
+    sink = EventSink()
+    kinds: list[str] = []
+    sink.add_callback(lambda e: kinds.append(e.kind))
+
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    assert "gate_review" in kinds
+    assert SprintStatus(git_project / SS_REL).story_status("7-2-create-api") == "done"
+
+
+def test_gate_no_go_corrects_in_same_session(git_project: Path, fake_claude):
+    """No-go → o prompt de correção do advisor vai pra MESMA sessão (resume) e o
+    gate revalida; depois a fase avança."""
+    rec = fake_claude
+    rec.gate_verdicts = [
+        {"ok": False, "blockers": ["falta teste de regressão"],
+         "corrections": "Adicione o teste de regressão do SET NULL."},
+        {"ok": True, "blockers": [], "corrections": ""},
+    ]
+    cfg = config_for_project(git_project, phases=safe_phases())
+    sink = EventSink()
+    kinds: list[str] = []
+    sink.add_callback(lambda e: kinds.append(e.kind))
+
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    assert "gate_correcting" in kinds
+    # a correção reabriu a MESMA sessão da fase (resume == session_id da 1ª sessão worker)
+    assert rec.sessions[1]["resume"] == rec.sessions[0]["session_id"]
+    # o prompt de correção do advisor foi injetado no worker
+    assert any(role == "worker" and "Adicione o teste de regressão" in p
+               for role, p in rec.queries)
+    assert SprintStatus(git_project / SS_REL).story_status("7-2-create-api") == "done"
+
+
+def test_gate_cap_pauses_for_human(git_project: Path, fake_claude):
+    """Gate reprovando sempre → após max_gate_rounds, pausa pro humano (checkpoint);
+    não loopa, e ao aprovar avança."""
+    rec = fake_claude
+    rec.gate_verdicts = [{"ok": False, "blockers": ["x"], "corrections": "fix"}] * 3
+    cfg = config_for_project(git_project, phases=safe_phases())
+    cfg.max_gate_rounds = 2
+    sink = EventSink()
+    kinds: list[str] = []
+    sink.add_callback(lambda e: kinds.append(e.kind))
+    control = RunControl()
+
+    async def go():
+        task = asyncio.create_task(run_loop(
+            cfg, story="7-2-create-api", epic=None, dry_run=False,
+            sink=sink, control=control))
+        for _ in range(300):
+            if "checkpoint_hit" in kinds:
+                break
+            await asyncio.sleep(0.02)
+        assert "checkpoint_hit" in kinds      # pausou pro humano (teto)
+        assert not task.done()
+        control.approve()                      # aprova -> avança
+        await asyncio.wait_for(task, timeout=10)
+
+    asyncio.run(go())
+    assert kinds.count("gate_review") >= 3     # revisou ≥3× antes de pausar
+
+
 def test_stop_cancels_mid_turn(git_project: Path, fake_claude):
     rec = fake_claude
     rec.worker_mode = "block"   # worker trava no meio do turno

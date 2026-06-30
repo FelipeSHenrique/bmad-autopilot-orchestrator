@@ -248,6 +248,15 @@ final class RunStore: ObservableObject {
         case "phase_resumed":
             addEntry(.init(kind: .note, title: "↻ retomando",
                            subtitle: "\(ev.skill ?? "") · \(ev.target ?? "") — continuando a sessão"))
+        case "gate_review":
+            let ok = ev.ok ?? true
+            addEntry(.init(kind: .gate,
+                           title: ok ? "Gate: pode avançar — \(ev.skill ?? "")"
+                                     : "Gate: bloqueado — \(ev.skill ?? "")",
+                           text: ok ? "" : (ev.message ?? "")))
+        case "gate_correcting":
+            addEntry(.init(kind: .note, title: "gate: corrigindo na mesma sessão",
+                           subtitle: ev.skill ?? ""))
         case "assistant_delta":
             let role = ev.role ?? "worker"
             // O advisor não vira bolha: a saída dele é JSON cru e já aparece

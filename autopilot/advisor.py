@@ -177,6 +177,34 @@ class Advisor:
             answer = "Use your best judgment based on the existing codebase and proceed."
         return answer
 
+    async def review_phase(self, skill: str, target_id: str, final_text: str) -> dict[str, Any]:
+        """Gate de conclusão: a fase terminou — valida o resultado e diz se pode avançar.
+
+        Inspeciona o diff/artefatos, as ACs e os ITENS DEFERIDOS (deferred-work.md),
+        separando defer não-bloqueante de defer load-bearing. Devolve
+        {ok, blockers, corrections}."""
+        prompt = (
+            f"A fase '{skill}' da story/epic '{target_id}' terminou. Resultado final do worker:\n"
+            f"--- resultado ---\n{final_text}\n--- fim ---\n\n"
+            "Valide se está tudo certo e se posso seguir para a próxima etapa. INSPECIONE o "
+            "diff/artefatos, os critérios de aceite, E os itens deferidos (procure o arquivo "
+            "deferred-work.md e a seção 'Defers' do resultado). Para CADA defer, julgue: é "
+            "realmente NÃO-bloqueante para avançar, ou é load-bearing para a próxima fase? "
+            "Um defer load-bearing (ou qualquer pendência que quebraria a próxima fase) entra "
+            "em blockers. Responda APENAS com um bloco JSON:\n"
+            '```json\n{\n  "ok": true,\n  "blockers": ["<pendência bloqueante, se houver>"],\n'
+            '  "corrections": "<prompt direto do que o worker deve corrigir AGORA (vazio se ok)>"\n}\n```'
+            + self._memory_context()
+        )
+        text = await self._ask(prompt)
+        data = _extract_json(text) or {}
+        ok = bool(data.get("ok", True))
+        blockers = data.get("blockers") or []
+        if not isinstance(blockers, list):
+            blockers = [str(blockers)]
+        corrections = str(data.get("corrections", "")).strip()
+        return {"ok": ok and not blockers, "blockers": blockers, "corrections": corrections}
+
     def _capture_escalation(self, data: dict[str, Any]) -> None:
         """Lê o campo opcional 'escalate' do JSON do advisor e guarda em
         last_escalation. correct-course (plano) vence quick-dev (código) se ambos
