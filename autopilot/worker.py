@@ -30,7 +30,7 @@ from claude_agent_sdk import (
 )
 
 from . import events as ev
-from .advisor import Advisor, _delta_text
+from .advisor import Advisor, _delta_text, _raise_if_rate_limited
 from .config import Config, invoke_string
 from .events import EventSink, RunControl
 
@@ -223,6 +223,7 @@ async def _drain_turn(client: ClaudeSDKClient, sink: EventSink) -> str:
     """Consome um ciclo de resposta, emitindo deltas/tool_use; devolve o texto."""
     parts: list[str] = []
     async for msg in client.receive_response():
+        await _raise_if_rate_limited(msg, sink)
         if isinstance(msg, StreamEvent):
             text = _delta_text(msg)
             if text:

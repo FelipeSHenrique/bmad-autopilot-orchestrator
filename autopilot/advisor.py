@@ -26,7 +26,7 @@ from claude_agent_sdk import (
 
 from . import events as ev
 from .config import DEFAULT_ADVISOR_PROMPT, RECOVERY_SKILLS, Config
-from .events import Escalation, EventSink
+from .events import Escalation, EventSink, TokenLimitReached
 
 ROLE = "advisor"
 PERSONA = DEFAULT_ADVISOR_PROMPT  # default; pode ser sobrescrito por projeto
@@ -99,6 +99,7 @@ class Advisor:
         await self._client.query(prompt)
         parts: list[str] = []
         async for msg in self._client.receive_response():
+            await _raise_if_rate_limited(msg, self.sink)
             if isinstance(msg, StreamEvent):
                 text = _delta_text(msg)
                 if text:
@@ -196,6 +197,24 @@ class Advisor:
         )
         with self._memory_path.open("a", encoding="utf-8") as fh:
             fh.write(entry)
+
+
+async def _raise_if_rate_limited(msg: Any, sink: EventSink) -> None:
+    """Detecta limite de tokens/rate-limit no stream do SDK e encerra o run limpo.
+
+    O SDK não lança exceção: o sinal vem (a) num evento com `rate_limit_info`
+    cujo status é 'rejected', ou (b) num ResultMessage com is_error + HTTP 429/503/529.
+    Emite token_limit e levanta TokenLimitReached (o loop encerra sem crashar)."""
+    rl = getattr(msg, "rate_limit_info", None)
+    if rl is not None and getattr(rl, "status", None) == "rejected":
+        resets = getattr(rl, "resets_at", None)
+        await sink.emit(ev.token_limit("limite de tokens atingido (rate limit)", resets))
+        raise TokenLimitReached("rate limit", resets)
+    if isinstance(msg, ResultMessage):
+        status = getattr(msg, "api_error_status", None)
+        if getattr(msg, "is_error", None) and status in (429, 503, 529):
+            await sink.emit(ev.token_limit(f"erro da API {status} (limite/sobrecarga)", None))
+            raise TokenLimitReached(f"api {status}")
 
 
 def _delta_text(stream_ev: StreamEvent) -> str:

@@ -50,8 +50,10 @@ struct RunToolbar: ToolbarContent {
                 .help("Branch dedicada + commits locais; sem push, PR ou merge. Pausa ao fim de cada story.")
 
             if store.running {
-                Button { store.control("pause") } label: { Image(systemName: "pause.fill") }
-                    .clickableCursor()
+                Button { store.control(store.paused ? "resume" : "pause") } label: {
+                    Image(systemName: store.paused ? "play.fill" : "pause.fill")
+                }
+                .clickableCursor().help(store.paused ? "Retomar" : "Pausar")
                 Button { store.control("stop") } label: { Image(systemName: "stop.fill") }
                     .foregroundStyle(.red).clickableCursor()
             }
@@ -131,20 +133,19 @@ struct EpicRow: View {
         DisclosureGroup(isExpanded: $expanded) {
             ForEach(epic.stories) { s in
                 let runnable = s.runnable ?? true
+                let st = store.status(for: s.key, fallback: s.status)
+                let isRunning = store.running && store.currentTarget == s.key
                 HStack {
                     Image(systemName: "circle.fill")
                         .font(.system(size: 6))
-                        .foregroundStyle(Theme.color(for: store.status(for: s.key, fallback: s.status)))
+                        .foregroundStyle(Theme.color(for: st))
                     Text(s.key).font(.callout).lineLimit(1)
                     Spacer()
-                    StatusBadge(status: store.status(for: s.key, fallback: s.status))
-                    Button { store.runStory(s.key) } label: {
-                        Image(systemName: "play.circle")
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(!store.backendUp || store.running || !runnable)
-                    .clickableCursor()
-                    .help(runnable ? "Rodar esta story" : (s.runnableReason ?? "fora de ordem"))
+                    StatusBadge(status: st)
+                    RunActionButton(done: st == "done", isRunning: isRunning,
+                                    runnable: runnable, playIcon: "play.circle",
+                                    disabledReason: s.runnableReason,
+                                    play: { store.runStory(s.key) })
                 }
             }
         } label: {
@@ -152,14 +153,45 @@ struct EpicRow: View {
                 Text("Epic \(epic.epic)").fontWeight(.semibold)
                 if let es = epic.epicStatus { StatusBadge(status: es) }
                 Spacer()
-                Button { store.runEpic(epic.epic) } label: {
-                    Image(systemName: "play.circle.fill")
-                }
-                .buttonStyle(.borderless)
-                .disabled(!store.backendUp || store.running || !(epic.runnable ?? true))
-                .clickableCursor()
-                .help((epic.runnable ?? true) ? "Rodar a epic inteira" : (epic.runnableReason ?? "fora de ordem"))
+                let epicRunning = store.running && epic.stories.contains { $0.key == store.currentTarget }
+                RunActionButton(done: epic.epicStatus == "done", isRunning: epicRunning,
+                                runnable: epic.runnable ?? true, playIcon: "play.circle.fill",
+                                disabledReason: epic.runnableReason,
+                                play: { store.runEpic(epic.epic) })
             }
+        }
+    }
+}
+
+/// Botão de ação por linha (story/epic): ✓ se done, pause/resume se rodando,
+/// senão ▶ (habilitado/desabilitado conforme runnable).
+struct RunActionButton: View {
+    @EnvironmentObject var store: RunStore
+    let done: Bool
+    let isRunning: Bool
+    let runnable: Bool
+    let playIcon: String
+    let disabledReason: String?
+    let play: () -> Void
+
+    var body: some View {
+        if done {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .help("Concluída")
+        } else if isRunning {
+            Button { store.control(store.paused ? "resume" : "pause") } label: {
+                Image(systemName: store.paused ? "play.circle.fill" : "pause.circle.fill")
+                    .foregroundStyle(.orange)
+            }
+            .buttonStyle(.borderless).clickableCursor()
+            .help(store.paused ? "Retomar" : "Pausar")
+        } else {
+            Button(action: play) { Image(systemName: playIcon) }
+                .buttonStyle(.borderless)
+                .disabled(!store.backendUp || store.running || !runnable)
+                .clickableCursor()
+                .help(runnable ? "Rodar" : (disabledReason ?? "fora de ordem"))
         }
     }
 }
@@ -180,6 +212,12 @@ struct RunCenterView: View {
             if let err = store.lastError, store.backendUp {
                 Banner(color: .red, icon: "exclamationmark.triangle", text: err) {
                     Button("OK") { store.lastError = nil }
+                }
+            }
+            if let tl = store.tokenLimitBanner {
+                Banner(color: .orange, icon: "hourglass",
+                       text: "Pausado por limite de tokens: \(tl). O estado está salvo — retome clicando no play quando o limite resetar.") {
+                    Button("OK") { store.tokenLimitBanner = nil }
                 }
             }
             if store.dryRun {

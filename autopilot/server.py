@@ -107,15 +107,17 @@ class RunManager:
         if self.task and not self.task.done():
             self.task.cancel()   # interrompe mesmo no meio de um turno do worker
 
-    def control_action(self, action: str) -> None:
+    async def control_action(self, action: str) -> None:
         if not self.control:
             raise HTTPException(409, "nenhum run ativo")
         if action == "stop":
             self._stop_now()
         elif action == "pause":
             self.control.pause()
+            await self.sink.emit(ae.run_paused("user"))
         elif action == "resume":
             self.control.resume()
+            await self.sink.emit(ae.run_resumed())
         elif action == "approve":
             self.control.approve()              # checkpoint
             self.control.choose_recovery("run")  # ou: rodar a recuperação pendente
@@ -177,7 +179,12 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        return {"ok": True, "running": mgr.running, "current": mgr.current}
+        return {
+            "ok": True,
+            "running": mgr.running,
+            "current": mgr.current,
+            "paused": mgr.control.paused if mgr.control else False,
+        }
 
     @app.get("/projects")
     async def list_projects() -> list[dict[str, Any]]:
@@ -287,7 +294,7 @@ def create_app() -> FastAPI:
 
     @app.post("/control")
     async def control(body: ControlRequest) -> dict[str, bool]:
-        mgr.control_action(body.action)
+        await mgr.control_action(body.action)
         return {"ok": True}
 
     @app.websocket("/ws")

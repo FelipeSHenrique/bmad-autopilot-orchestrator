@@ -39,6 +39,8 @@ final class RunStore: ObservableObject {
     @Published var liveStatus: [String: String] = [:]   // key -> status (sobrepõe detect)
     @Published var checkpointLabel: String?
     @Published var recovery: RecoveryItem?            // recuperação aguardando decisão
+    @Published var paused = false                     // run pausado (gate)
+    @Published var tokenLimitBanner: String?          // halt por limite de tokens
     @Published var showingSettings = false
 
     static func storyPhases() -> [PhaseRow] {
@@ -169,6 +171,7 @@ final class RunStore: ObservableObject {
         transcript = []; curMsgIndex = nil; curRole = nil
         decisions = []; gitRows = []; messages = []
         checkpointLabel = nil; recovery = nil
+        paused = false; tokenLimitBanner = nil
     }
 
     // ---- montagem da conversa (transcript) -----------------------------
@@ -216,6 +219,7 @@ final class RunStore: ObservableObject {
             phases = (ev.scope == "epic") ? RunStore.epicPhases() : RunStore.storyPhases()
         case "run_ended":
             running = false
+            paused = false
             recovery = nil   // dispensa qualquer sheet de recuperação pendente
             // para qualquer spinner: fase que ficou "running" volta a pending
             for i in phases.indices where phases[i].state == .running {
@@ -276,6 +280,17 @@ final class RunStore: ObservableObject {
             recovery = nil   // já resolvido (auto ou aprovado)
             addEntry(.init(kind: .recovery, title: "Recuperação iniciada: \(ev.skill ?? "")",
                            subtitle: "rodando…", text: ev.reason ?? ""))
+        case "run_paused":
+            paused = true
+            addEntry(.init(kind: .note, title: "pausado", subtitle: ev.reason ?? ""))
+        case "run_resumed":
+            paused = false
+            addEntry(.init(kind: .note, title: "retomado", subtitle: ""))
+        case "token_limit":
+            var msg = ev.message ?? "limite atingido"
+            if let r = ev.resetsAt { msg += " (reseta \(Self.fmtReset(r)))" }
+            tokenLimitBanner = msg
+            addEntry(.init(kind: .error, text: "⏳ \(msg)"))
         case "log":
             messages.append(ev.message ?? "")
             addEntry(.init(kind: .note, text: ev.message ?? ""))
@@ -289,5 +304,12 @@ final class RunStore: ObservableObject {
 
     func status(for storyKey: String, fallback: String) -> String {
         liveStatus[storyKey] ?? fallback
+    }
+
+    /// Formata um timestamp unix (resets_at do rate-limit) como hora local HH:mm.
+    static func fmtReset(_ unix: Int) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "dd/MM HH:mm"
+        return f.string(from: Date(timeIntervalSince1970: TimeInterval(unix)))
     }
 }

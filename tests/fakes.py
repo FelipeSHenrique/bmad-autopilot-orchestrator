@@ -51,7 +51,20 @@ class FakeAssistantMessage:
 
 
 class FakeResultMessage:
-    pass
+    def __init__(self, is_error=None, api_error_status=None):
+        self.is_error = is_error
+        self.api_error_status = api_error_status
+
+
+class FakeRateLimitInfo:
+    def __init__(self, status: str, resets_at: int | None = None):
+        self.status = status
+        self.resets_at = resets_at
+
+
+class FakeRateLimitEvent:
+    def __init__(self, status: str = "rejected", resets_at: int | None = None):
+        self.rate_limit_info = FakeRateLimitInfo(status, resets_at)
 
 
 def _delta(text: str) -> FakeStreamEvent:
@@ -67,6 +80,7 @@ class Recorder:
         self.interrupts = 0
         self.answers: Any = None
         self.worker_mode = "ask"           # "ask" | "block" | "loop"
+        self.token_limit_mode: str | None = None  # None | "ratelimit" | "result429"
         self.advisor_escalate: str | None = None   # skill que o advisor pede (recuperação)
         self.advisor_escalate_once = True          # consome após a 1ª decisão
 
@@ -109,6 +123,15 @@ class FakeClaudeSDKClient:
             return
 
         # worker
+        if _REC.token_limit_mode and self._turn == 1:
+            # simula limite de tokens/rate-limit no 1º turno do worker
+            yield _delta("trabalhando...")
+            if _REC.token_limit_mode == "ratelimit":
+                yield FakeRateLimitEvent(status="rejected", resets_at=2_000_000_000)
+            else:
+                yield FakeResultMessage(is_error=True, api_error_status=429)
+            return
+
         if _REC.worker_mode == "block":
             yield _delta("trabalhando...")
             await asyncio.sleep(3600)        # bloqueia (cancelável) — simula turno longo

@@ -94,11 +94,13 @@ struct AutoEvent: Identifiable, Decodable {
     let phase: String?
     let decision: JSONValue?
     let question: JSONValue?
+    let resetsAt: Int?
 
     enum CodingKeys: String, CodingKey {
         case kind, ts, role, text, skill, target, name, message, level, op, result
         case key, to, from, label, scope, ok, reason, rationale, phase, decision, question
         case dryRun = "dry_run"
+        case resetsAt = "resets_at"
     }
 }
 

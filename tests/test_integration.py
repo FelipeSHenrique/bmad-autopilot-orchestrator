@@ -183,6 +183,46 @@ def test_recovery_cap_prevents_loop(git_project: Path, fake_claude):
     assert sum(1 for k in kinds if k == "recovery_started") <= 2  # respeitou o teto
 
 
+def test_token_limit_halts_cleanly(git_project: Path, fake_claude):
+    """Limite de tokens/rate-limit no meio do run → encerra LIMPO (sem exceção),
+    emite token_limit + run_ended rotulado, e NÃO avança o sprint-status."""
+    rec = fake_claude
+    rec.token_limit_mode = "ratelimit"   # worker recebe RateLimitEvent(rejected)
+    cfg = config_for_project(git_project, phases=safe_phases())
+    sink = EventSink()
+    kinds: list[str] = []
+    reasons: list[str] = []
+    sink.add_callback(lambda e: (kinds.append(e.kind),
+                                 reasons.append(e.data.get("reason", "")) if e.kind == "run_ended" else None))
+
+    before = SprintStatus(git_project / SS_REL).story_status("7-2-create-api")
+    # não deve levantar exceção (halt limpo)
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    assert "token_limit" in kinds                 # evento de limite emitido
+    assert kinds[-1] == "run_ended"
+    assert any("limite de tokens" in r for r in reasons)
+    # estado preservado: a story NÃO avançou (retoma re-rodando depois)
+    assert SprintStatus(git_project / SS_REL).story_status("7-2-create-api") == before
+
+
+def test_token_limit_via_result_error(git_project: Path, fake_claude):
+    """Mesmo halt limpo quando o sinal vem como ResultMessage(is_error, HTTP 429)."""
+    rec = fake_claude
+    rec.token_limit_mode = "result429"
+    cfg = config_for_project(git_project, phases=safe_phases())
+    sink = EventSink()
+    kinds: list[str] = []
+    sink.add_callback(lambda e: kinds.append(e.kind))
+
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    assert "token_limit" in kinds
+    assert kinds[-1] == "run_ended"
+
+
 def test_stop_cancels_mid_turn(git_project: Path, fake_claude):
     rec = fake_claude
     rec.worker_mode = "block"   # worker trava no meio do turno

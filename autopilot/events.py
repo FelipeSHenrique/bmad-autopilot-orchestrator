@@ -91,6 +91,18 @@ def recovery_started(skill: str, reason: str = "") -> Event:
     return Event("recovery_started", {"skill": skill, "reason": reason})
 
 
+def run_paused(reason: str = "user") -> Event:
+    return Event("run_paused", {"reason": reason})
+
+
+def run_resumed() -> Event:
+    return Event("run_resumed", {})
+
+
+def token_limit(message: str, resets_at: int | None = None) -> Event:
+    return Event("token_limit", {"message": message, "resets_at": resets_at})
+
+
 def log(message: str, level: str = "info") -> Event:
     return Event("log", {"message": message, "level": level})
 
@@ -150,6 +162,16 @@ class EventSink:
 
 class StopRequested(Exception):
     """Levantada quando o usuário pede stop; o loop encerra graciosamente."""
+
+
+class TokenLimitReached(Exception):
+    """Levantada quando o limite de tokens/rate-limit é atingido no meio do run.
+    O loop encerra de forma limpa (sem crash); o estado fica no sprint-status e o
+    usuário retoma re-rodando."""
+
+    def __init__(self, message: str, resets_at: int | None = None):
+        super().__init__(message)
+        self.resets_at = resets_at
 
 
 class RunControl:

@@ -10,7 +10,7 @@ from . import events as ev
 from . import router
 from .advisor import Advisor
 from .config import CORRECT_COURSE, RETROSPECTIVE, Config
-from .events import Escalation, EventSink, RunControl, StopRequested
+from .events import Escalation, EventSink, RunControl, StopRequested, TokenLimitReached
 from .git_rules import GitContext, GitRunner, apply_phase
 from .status import SprintStatus, parse_story_key
 from .worker import run_phase
@@ -216,6 +216,9 @@ async def run(
         await sink.emit(ev.run_ended(True))
     except StopRequested:
         await sink.emit(ev.run_ended(False, "parado pelo usuário"))
+    except TokenLimitReached:
+        # halt limpo: estado preservado no sprint-status; retoma re-rodando.
+        await sink.emit(ev.run_ended(False, "limite de tokens — pausado (retome re-rodando)"))
     except asyncio.CancelledError:
         await sink.emit(ev.run_ended(False, "parado pelo usuário"))
         raise
