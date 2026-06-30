@@ -23,6 +23,31 @@ from .status import SprintStatus, parse_story_key
 from .worker import run_phase
 
 
+async def _emit_status_diffs(status: SprintStatus, sink: EventSink, last: dict[str, str]) -> None:
+    """Emite status_changed para cada chave que mudou no sprint-status desde `last`
+    (atualiza `last`). Fonte ÚNICA de visibilidade de status — com `from` correto e
+    sem duplicar. Usada tanto pelo flush após cada fase quanto pelo poller ao vivo."""
+    try:
+        cur = status.development_status()
+    except Exception:
+        return
+    for key, to in cur.items():
+        frm = last.get(key)
+        if frm != to:
+            last[key] = to   # atualiza ANTES do await (evita corrida poller x flush)
+            await sink.emit(ev.status_changed(key, to, frm))
+
+
+async def _status_poller(
+    status: SprintStatus, sink: EventSink, last: dict[str, str], interval: float
+) -> None:
+    """Roda em paralelo ao run: a cada `interval`s, emite as mudanças de status que
+    a skill gravou no arquivo (ex.: in-progress) — visibilidade ao vivo no app."""
+    while True:
+        await asyncio.sleep(interval)
+        await _emit_status_diffs(status, sink, last)
+
+
 async def _checkpoint(label: str, cfg: Config, sink: EventSink, control: RunControl) -> None:
     await sink.emit(ev.checkpoint_hit(label))
     if control.interactive_cli:
@@ -132,7 +157,7 @@ async def _handle_recovery(
 
 async def process_story(
     story_key: str, cfg: Config, status: SprintStatus, runner: GitRunner,
-    sink: EventSink, control: RunControl, dry_run: bool,
+    sink: EventSink, control: RunControl, dry_run: bool, last: dict[str, str],
 ) -> None:
     parsed = parse_story_key(story_key)
     epic_id = str(parsed.epic) if parsed else ""
@@ -161,7 +186,6 @@ async def process_story(
                 "iterações) — abortando a story para não gastar tokens"))
             break
         target = phase.next_status
-        frm = status.story_status(story_key)   # status ANTES da fase (p/ emitir a transição real)
         done_pred = lambda t=target: status.story_status(story_key) == t
         esc = await _run_one_phase(phase.skill, story_key, cfg, Advisor, sink, control,
                                    dry_run, done_pred)
@@ -179,16 +203,12 @@ async def process_story(
                     continue  # recuperação rodou -> re-avalia o status (não força avanço)
                 # pulada -> cai no fluxo normal (aceita o resultado da fase)
 
-        # A skill do BMAD é a DONA do status (escrita). O orquestrador separa
-        # ESCREVER de EMITIR: só grava como backstop (se a skill não avançou), mas
-        # SEMPRE emite a transição real pra visibilidade ao vivo (app/feed) —
-        # comparando o status de antes com o de depois, não importa quem gravou.
-        cur = status.story_status(story_key)
-        if cur != phase.next_status:                  # skill não avançou -> backstop grava
+        # A skill do BMAD é a DONA do status (escrita): o orquestrador só grava como
+        # backstop, se a skill não avançou. A visibilidade fica por conta do
+        # _emit_status_diffs (flush determinístico após a fase + poller ao vivo).
+        if status.story_status(story_key) != phase.next_status:
             status.set_status(story_key, phase.next_status)
-            cur = phase.next_status
-        if cur != frm:                                # emite a transição real (visibilidade)
-            await sink.emit(ev.status_changed(story_key, cur, frm))
+        await _emit_status_diffs(status, sink, last)
 
         ctx = GitContext(story_id=story_key, epic_id=epic_id)
         await apply_phase(cfg.phase(phase.skill), runner, ctx, sink)
@@ -199,7 +219,7 @@ async def process_story(
 
 async def run_epic(
     epic_id: str, cfg: Config, status: SprintStatus, runner: GitRunner,
-    sink: EventSink, control: RunControl, dry_run: bool,
+    sink: EventSink, control: RunControl, dry_run: bool, last: dict[str, str],
 ) -> None:
     stories = status.epic_stories(epic_id)
     if not stories:
@@ -207,7 +227,7 @@ async def run_epic(
     await sink.emit(ev.log(f"epic {epic_id}: {len(stories)} stories"))
     for s in stories:
         control.raise_if_stopped()
-        await process_story(s.key, cfg, status, runner, sink, control, dry_run)
+        await process_story(s.key, cfg, status, runner, sink, control, dry_run, last)
 
     if dry_run:
         await sink.emit(ev.log(f"[dry-run] ao completar a epic rodaria {RETROSPECTIVE}"))
@@ -221,24 +241,23 @@ async def run_epic(
                                    dry_run, retro_done)
         if esc is not None and not dry_run:
             await _handle_recovery(esc, retro_key, str(epic_id), cfg, runner, sink, control)
-        try:
-            status.set_status(retro_key, "done")
-            await sink.emit(ev.status_changed(retro_key, "done"))
-        except KeyError:
-            await sink.emit(ev.log(f"'{retro_key}' não existe no sprint-status; pulando", "warn"))
+        if status.story_status(retro_key) != "done":   # backstop (a retro costuma gravar)
+            try:
+                status.set_status(retro_key, "done")
+            except KeyError:
+                await sink.emit(ev.log(f"'{retro_key}' não existe no sprint-status; pulando", "warn"))
         ctx = GitContext(story_id="", epic_id=str(epic_id))
         await apply_phase(cfg.phase(RETROSPECTIVE), runner, ctx, sink)
 
         # epic concluída (stories + retrospective) -> vira o rótulo epic-N para done,
         # senão ele fica preso em "in-progress" e a UI mostra status enganoso.
         epic_label = status.epic_key(epic_id)
-        try:
-            frm = status.story_status(epic_label)
-            if frm != "done":
+        if status.story_status(epic_label) not in (None, "done"):
+            try:
                 status.set_status(epic_label, "done")
-                await sink.emit(ev.status_changed(epic_label, "done", frm))
-        except KeyError:
-            pass  # nem todo sprint-status tem o rótulo epic-N
+            except KeyError:
+                pass  # nem todo sprint-status tem o rótulo epic-N
+        await _emit_status_diffs(status, sink, last)   # emite retro done + epic done
     else:
         pending = [s.key for s in stories if status.story_status(s.key) != "done"]
         await sink.emit(ev.log(f"epic {epic_id} incompleta; pendentes: {pending}", "warn"))
@@ -253,11 +272,23 @@ async def run(
     await sink.emit(ev.run_started(scope, target, dry_run))
     status = SprintStatus(cfg.sprint_status_file)
     runner = GitRunner(cfg.bmad_project_dir, dry_run=dry_run)
+
+    # Visibilidade de status ao vivo: snapshot inicial + poller do sprint-status
+    # (só em run real; em dry-run o arquivo não muda e usamos emits simulados).
+    last: dict[str, str] = {}
+    poller: asyncio.Task | None = None
+    if not dry_run:
+        try:
+            last = status.development_status()
+        except Exception:
+            last = {}
+        poller = asyncio.create_task(
+            _status_poller(status, sink, last, cfg.status_poll_interval))
     try:
         if story:
-            await process_story(story, cfg, status, runner, sink, control, dry_run)
+            await process_story(story, cfg, status, runner, sink, control, dry_run, last)
         elif epic:
-            await run_epic(epic, cfg, status, runner, sink, control, dry_run)
+            await run_epic(epic, cfg, status, runner, sink, control, dry_run, last)
         else:
             raise SystemExit("informe --story ou --epic")
         await sink.emit(ev.run_ended(True))
@@ -277,3 +308,10 @@ async def run(
         await sink.emit(ev.error(str(exc)))
         await sink.emit(ev.run_ended(False, str(exc)))
         raise
+    finally:
+        if poller is not None:
+            poller.cancel()
+            try:
+                await poller
+            except (asyncio.CancelledError, Exception):
+                pass

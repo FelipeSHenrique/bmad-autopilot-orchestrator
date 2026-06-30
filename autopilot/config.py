@@ -102,6 +102,7 @@ class Config:
     max_recoveries_per_story: int = 2   # anti-loop: teto de recuperações por story
     max_phase_iters_per_story: int = 12 # anti-loop: teto de iterações de fase por story
     resume_ttl_hours: int = 24          # validade do marcador de resume de sessão
+    status_poll_interval: float = 1.0   # poll do sprint-status p/ status ao vivo (incl. in-progress)
     enable_gate: bool = True            # advisor revisa o resultado de cada fase antes de avançar
     max_gate_rounds: int = 2            # rodadas de correção do gate antes de pausar pro humano
     advisor_prompt: str | None = None   # None => DEFAULT_ADVISOR_PROMPT
