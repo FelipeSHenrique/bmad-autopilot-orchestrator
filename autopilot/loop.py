@@ -52,14 +52,13 @@ async def _run_one_phase(
         final_text, sid = await run_phase(skill, target_id, cfg, advisor, sink, control,
                                           dry_run=False, done_predicate=done_predicate)
         if cfg.enable_gate:
-            await _run_gate(skill, target_id, cfg, advisor, sink, control,
-                            final_text, sid, done_predicate)
+            await _run_gate(skill, target_id, cfg, advisor, sink, control, final_text, sid)
         return advisor.last_escalation
 
 
 async def _run_gate(
     skill: str, target_id: str, cfg: Config, advisor, sink: EventSink,
-    control: RunControl, final_text: str, sid: str | None, done_predicate,
+    control: RunControl, final_text: str, sid: str | None,
 ) -> None:
     """Gate de conclusão: o advisor valida o resultado da fase e diz se pode avançar.
 
@@ -79,9 +78,11 @@ async def _run_gate(
             await control.wait_approval()  # aprovar = avança; stop = encerra
             return
         await sink.emit(ev.gate_correcting(skill, target_id))   # no-go -> corrige na mesma sessão
+        # done_predicate=None de propósito: o status já está no alvo (a skill avançou),
+        # então a correção deve rodar até o worker concluir, não parar no 1º turno.
         final_text, sid = await run_phase(
             skill, target_id, cfg, advisor, sink, control,
-            done_predicate=done_predicate, resume_session=sid,
+            done_predicate=None, resume_session=sid,
             resume_prompt=v.get("corrections") or "Corrija os pontos apontados e conclua a fase.")
 
 
@@ -177,9 +178,13 @@ async def process_story(
                     continue  # recuperação rodou -> re-avalia o status (não força avanço)
                 # pulada -> cai no fluxo normal (aceita o resultado da fase)
 
+        # A skill do BMAD é a DONA do status. O orquestrador só age como backstop:
+        # se a skill não avançou (frm != alvo), grava e emite o evento real; se a skill
+        # já gravou, não toca (evita reescrever e o evento "de→para" iguais).
         frm = status.story_status(story_key)
-        status.set_status(story_key, phase.next_status)
-        await sink.emit(ev.status_changed(story_key, phase.next_status, frm))
+        if frm != phase.next_status:
+            status.set_status(story_key, phase.next_status)
+            await sink.emit(ev.status_changed(story_key, phase.next_status, frm))
 
         ctx = GitContext(story_id=story_key, epic_id=epic_id)
         await apply_phase(cfg.phase(phase.skill), runner, ctx, sink)

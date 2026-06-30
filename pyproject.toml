@@ -19,3 +19,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["autopilot*"]
 exclude = ["refs*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]          # só os nossos testes; não varre refs/ (repos de terceiros)
