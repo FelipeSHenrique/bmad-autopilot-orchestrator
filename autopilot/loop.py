@@ -10,7 +10,14 @@ from . import events as ev
 from . import router
 from .advisor import Advisor
 from .config import CORRECT_COURSE, RETROSPECTIVE, Config
-from .events import Escalation, EventSink, RunControl, StopRequested, TokenLimitReached
+from .events import (
+    ConnectionLost,
+    Escalation,
+    EventSink,
+    RunControl,
+    StopRequested,
+    TokenLimitReached,
+)
 from .git_rules import GitContext, GitRunner, apply_phase
 from .status import SprintStatus, parse_story_key
 from .worker import run_phase
@@ -219,6 +226,10 @@ async def run(
     except TokenLimitReached:
         # halt limpo: estado preservado no sprint-status; retoma re-rodando.
         await sink.emit(ev.run_ended(False, "limite de tokens — pausado (retome re-rodando)"))
+    except ConnectionLost as exc:
+        # rede caiu: halt limpo; a sessão fica retomável (↻) quando a conexão voltar.
+        await sink.emit(ev.connection_lost(str(exc)))
+        await sink.emit(ev.run_ended(False, "sem conexão — pausado (retome com ↻ quando a rede voltar)"))
     except asyncio.CancelledError:
         await sink.emit(ev.run_ended(False, "parado pelo usuário"))
         raise

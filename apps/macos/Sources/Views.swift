@@ -43,6 +43,7 @@ struct RunToolbar: ToolbarContent {
 
     var body: some ToolbarContent {
         ToolbarItemGroup {
+            ConnectionStatus()
             Toggle("Dry-run", isOn: $store.dryRun)
                 .toggleStyle(.button)
             Toggle("Modo seguro", isOn: $store.safeMode)
@@ -120,6 +121,27 @@ struct SidebarView: View {
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url {
             store.addProject(path: url.path)
+        }
+    }
+}
+
+/// Pill de status de conexão: app↔backend e backend↔Claude.
+struct ConnectionStatus: View {
+    @EnvironmentObject var store: RunStore
+
+    var body: some View {
+        HStack(spacing: 8) {
+            dot(ok: store.backendUp, label: "Backend")
+            dot(ok: store.online, label: "Claude")
+        }
+        .font(.caption2)
+        .help("Conexão — Backend: app↔serviço local · Claude: serviço↔internet/API")
+    }
+
+    @ViewBuilder private func dot(ok: Bool, label: String) -> some View {
+        HStack(spacing: 3) {
+            Circle().fill(ok ? Color.green : Color.red).frame(width: 7, height: 7)
+            Text(label).foregroundStyle(.secondary)
         }
     }
 }
@@ -241,6 +263,12 @@ struct RunCenterView: View {
                 Banner(color: .orange, icon: "hourglass",
                        text: "Pausado por limite de tokens: \(tl). O estado está salvo — retome clicando no play quando o limite resetar.") {
                     Button("OK") { store.tokenLimitBanner = nil }
+                }
+            }
+            if let cb = store.connectionBanner {
+                Banner(color: .red, icon: "wifi.slash",
+                       text: "Sem conexão: \(cb). O run foi pausado e a sessão está salva — retome com ↻ quando a rede voltar.") {
+                    Button("OK") { store.connectionBanner = nil }
                 }
             }
             if store.dryRun {

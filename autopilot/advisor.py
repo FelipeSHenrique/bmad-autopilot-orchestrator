@@ -26,7 +26,27 @@ from claude_agent_sdk import (
 
 from . import events as ev
 from .config import DEFAULT_ADVISOR_PROMPT, RECOVERY_SKILLS, Config
-from .events import Escalation, EventSink, TokenLimitReached
+from .events import ConnectionLost, Escalation, EventSink, TokenLimitReached
+
+try:  # erro de conexão do CLI do Claude (rede caiu / não alcançou a API)
+    from claude_agent_sdk import CLIConnectionError
+except ImportError:  # pragma: no cover
+    CLIConnectionError = ()  # type: ignore[assignment]
+
+# Padrões de mensagem que indicam falha de REDE (não rate-limit/cota).
+_NET_PATTERNS = re.compile(
+    r"network|connection (refused|reset|error|closed)|econnrefused|econnreset|"
+    r"enotfound|etimedout|timed?\s*out|fetch failed|getaddrinfo|offline|"
+    r"could not (connect|reach)|dns|unreachable|name resolution",
+    re.IGNORECASE,
+)
+
+
+def is_network_error(exc: object) -> bool:
+    """Heurística: a exceção parece falha de rede/conexão (transitória)?"""
+    if CLIConnectionError and isinstance(exc, CLIConnectionError):
+        return True
+    return bool(_NET_PATTERNS.search(str(exc)))
 
 ROLE = "advisor"
 PERSONA = DEFAULT_ADVISOR_PROMPT  # default; pode ser sobrescrito por projeto
@@ -215,6 +235,9 @@ async def _raise_if_rate_limited(msg: Any, sink: EventSink) -> None:
         if getattr(msg, "is_error", None) and status in (429, 503, 529):
             await sink.emit(ev.token_limit(f"erro da API {status} (limite/sobrecarga)", None))
             raise TokenLimitReached(f"api {status}")
+        # 408/502/504 = timeout/gateway -> tratamos como queda de rede (retomável)
+        if getattr(msg, "is_error", None) and status in (408, 502, 504):
+            raise ConnectionLost(f"api {status} (rede/gateway)")
 
 
 def _delta_text(stream_ev: StreamEvent) -> str:

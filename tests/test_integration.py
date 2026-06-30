@@ -304,6 +304,42 @@ def test_resume_ttl_expired_starts_fresh(git_project: Path, fake_claude):
     assert "phase_resumed" not in kinds
 
 
+def test_connection_lost_halts_cleanly(git_project: Path, fake_claude):
+    """Queda de rede (ResultMessage 502) no meio → halt LIMPO (connection_lost +
+    run_ended), marcador preservado (retomável) e status NÃO avança."""
+    rec = fake_claude
+    rec.token_limit_mode = "network"
+    cfg = config_for_project(git_project, phases=safe_phases())
+    sink = EventSink()
+    kinds: list[str] = []
+    sink.add_callback(lambda e: kinds.append(e.kind))
+
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    assert "connection_lost" in kinds
+    assert kinds[-1] == "run_ended"
+    assert "7-2-create-api" in _markers(git_project)     # sessão retomável (↻)
+    assert SprintStatus(git_project / SS_REL).story_status("7-2-create-api") == "ready-for-dev"
+
+
+def test_connection_lost_via_exception(git_project: Path, fake_claude):
+    """Mesmo halt limpo quando a rede cai como EXCEÇÃO (ConnectionError do CLI)."""
+    rec = fake_claude
+    rec.token_limit_mode = "neterror"
+    cfg = config_for_project(git_project, phases=safe_phases())
+    sink = EventSink()
+    kinds: list[str] = []
+    sink.add_callback(lambda e: kinds.append(e.kind))
+
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    assert "connection_lost" in kinds
+    assert kinds[-1] == "run_ended"
+    assert "7-2-create-api" in _markers(git_project)     # retomável, não perdeu o trabalho
+
+
 def test_stop_cancels_mid_turn(git_project: Path, fake_claude):
     rec = fake_claude
     rec.worker_mode = "block"   # worker trava no meio do turno

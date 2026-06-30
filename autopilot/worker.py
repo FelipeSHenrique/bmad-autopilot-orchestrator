@@ -32,9 +32,9 @@ from claude_agent_sdk import (
 
 from . import events as ev
 from . import resume
-from .advisor import Advisor, _delta_text, _raise_if_rate_limited
+from .advisor import Advisor, _delta_text, _raise_if_rate_limited, is_network_error
 from .config import Config, invoke_string
-from .events import EventSink, RunControl, StopRequested, TokenLimitReached
+from .events import ConnectionLost, EventSink, RunControl, StopRequested, TokenLimitReached
 
 ROLE = "worker"
 
@@ -219,22 +219,25 @@ async def run_phase(
             await sink.emit(
                 ev.error(f"max_turns_per_phase atingido em {skill}:{target_id}")
             )
-    except (asyncio.CancelledError, StopRequested, TokenLimitReached):
-        # Pausa/stop/limite legítimos: MANTÉM o marcador (fase retomável do ponto exato).
+    except (asyncio.CancelledError, StopRequested, TokenLimitReached, ConnectionLost):
+        # Pausa/stop/limite/rede legítimos: MANTÉM o marcador (fase retomável do ponto exato).
         try:
             await client.interrupt()
         except Exception:
             pass
         raise
-    except Exception:
-        # Erro inesperado: se estávamos resumindo, a sessão pode ter sumido — descarta o
-        # marcador para o próximo re-run começar do zero (evita resume "envenenado").
-        if resume_id:
-            resume.clear_marker(cfg, target_id)
+    except Exception as exc:
         try:
             await client.interrupt()
         except Exception:
             pass
+        if is_network_error(exc):
+            # Queda de rede é transitória: mantém o marcador (retomável) e sinaliza halt limpo.
+            raise ConnectionLost(str(exc)) from exc
+        # Erro inesperado: se estávamos resumindo, a sessão pode ter sumido — descarta o
+        # marcador para o próximo re-run começar do zero (evita resume "envenenado").
+        if resume_id:
+            resume.clear_marker(cfg, target_id)
         raise
     finally:
         try:

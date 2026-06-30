@@ -130,11 +130,15 @@ class FakeClaudeSDKClient:
 
         # worker
         if _REC.token_limit_mode and self._turn == 1:
-            # simula limite de tokens/rate-limit no 1º turno do worker
+            # simula limite de tokens / queda de rede no 1º turno do worker
             yield _delta("trabalhando...")
             if _REC.token_limit_mode == "ratelimit":
                 yield FakeRateLimitEvent(status="rejected", resets_at=2_000_000_000)
-            else:
+            elif _REC.token_limit_mode == "network":
+                yield FakeResultMessage(is_error=True, api_error_status=502)  # gateway/rede
+            elif _REC.token_limit_mode == "neterror":
+                raise ConnectionError("Connection refused: could not reach api.anthropic.com")
+            else:  # result429
                 yield FakeResultMessage(is_error=True, api_error_status=429)
             return
 

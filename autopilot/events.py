@@ -107,6 +107,10 @@ def token_limit(message: str, resets_at: int | None = None) -> Event:
     return Event("token_limit", {"message": message, "resets_at": resets_at})
 
 
+def connection_lost(message: str = "") -> Event:
+    return Event("connection_lost", {"message": message})
+
+
 def log(message: str, level: str = "info") -> Event:
     return Event("log", {"message": message, "level": level})
 
@@ -176,6 +180,11 @@ class TokenLimitReached(Exception):
     def __init__(self, message: str, resets_at: int | None = None):
         super().__init__(message)
         self.resets_at = resets_at
+
+
+class ConnectionLost(Exception):
+    """Levantada quando a rede/conexão com o Claude cai no meio do run. Halt
+    limpo (sem crash); o marcador de resume é preservado → retoma com ↻."""
 
 
 class RunControl:

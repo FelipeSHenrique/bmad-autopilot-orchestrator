@@ -42,6 +42,8 @@ final class RunStore: ObservableObject {
     @Published var recovery: RecoveryItem?            // recuperação aguardando decisão
     @Published var paused = false                     // run pausado (gate)
     @Published var tokenLimitBanner: String?          // halt por limite de tokens
+    @Published var online = true                      // conexão Claude/internet (por eventos)
+    @Published var connectionBanner: String?          // halt por queda de rede
     @Published var showingSettings = false
 
     static func storyPhases() -> [PhaseRow] {
@@ -173,6 +175,7 @@ final class RunStore: ObservableObject {
         decisions = []; gitRows = []; messages = []
         checkpointLabel = nil; recovery = nil
         paused = false; tokenLimitBanner = nil
+        online = true; connectionBanner = nil
     }
 
     // ---- montagem da conversa (transcript) -----------------------------
@@ -214,6 +217,7 @@ final class RunStore: ObservableObject {
         switch ev.kind {
         case "run_started":
             resetRun(); running = true
+            online = true; connectionBanner = nil   // novo run -> rede presumida OK
             currentTarget = ev.target ?? ""
             scope = ev.scope ?? scope
             runningEpic = (ev.scope == "epic")
@@ -299,6 +303,10 @@ final class RunStore: ObservableObject {
             if let r = ev.resetsAt { msg += " (reseta \(Self.fmtReset(r)))" }
             tokenLimitBanner = msg
             addEntry(.init(kind: .error, text: "⏳ \(msg)"))
+        case "connection_lost":
+            online = false
+            connectionBanner = ev.message?.isEmpty == false ? ev.message! : "sem conexão com o Claude"
+            addEntry(.init(kind: .error, text: "📡 sem conexão: \(connectionBanner ?? "")"))
         case "log":
             messages.append(ev.message ?? "")
             addEntry(.init(kind: .note, text: ev.message ?? ""))
