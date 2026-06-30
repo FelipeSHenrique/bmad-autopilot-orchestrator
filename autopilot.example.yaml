@@ -27,6 +27,7 @@ max_recoveries_per_story: 2  # anti-loop: teto de recuperações por story
 resume_ttl_hours: 24         # validade do marcador de resume de sessão (continuar do ponto exato)
 enable_gate: true            # advisor valida o resultado de cada fase (e itens deferidos) antes de avançar
 max_gate_rounds: 2           # rodadas de correção do gate antes de pausar pro humano
+auto_retrospective: true     # ao concluir a última story da epic, já roda a retrospective e fecha a epic
 log_dir: .autopilot/logs
 
 phases:

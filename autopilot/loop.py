@@ -217,6 +217,43 @@ async def process_story(
             await _checkpoint(f"story {story_key} concluída", cfg, sink, control)
 
 
+async def _finalize_epic(
+    epic_id: str, cfg: Config, status: SprintStatus, runner: GitRunner,
+    sink: EventSink, control: RunControl, last: dict[str, str],
+) -> bool:
+    """Se a epic está completa (todas as stories done) e a retrospective ainda não
+    rodou, roda a retrospective e marca retro/epic como done. Retorna True se rodou.
+    Usado tanto pelo run de epic quanto após a ÚLTIMA story (fechamento automático)."""
+    if not status.epic_complete(epic_id):
+        return False
+    retro_key = status.retrospective_key(epic_id)
+    if status.story_status(retro_key) == "done":
+        return False  # retrospective já feita
+    if cfg.autonomy.human_checkpoint == "retrospective":
+        await _checkpoint(f"epic {epic_id} concluída", cfg, sink, control)
+    retro_done = lambda: status.story_status(retro_key) == "done"
+    esc = await _run_one_phase(RETROSPECTIVE, str(epic_id), cfg, Advisor, sink, control,
+                               False, retro_done)
+    if esc is not None:
+        await _handle_recovery(esc, retro_key, str(epic_id), cfg, runner, sink, control)
+    if status.story_status(retro_key) != "done":   # backstop (a retro costuma gravar)
+        try:
+            status.set_status(retro_key, "done")
+        except KeyError:
+            await sink.emit(ev.log(f"'{retro_key}' não existe no sprint-status; pulando", "warn"))
+    ctx = GitContext(story_id="", epic_id=str(epic_id))
+    await apply_phase(cfg.phase(RETROSPECTIVE), runner, ctx, sink)
+    # vira o rótulo epic-N para done (senão fica preso em in-progress)
+    epic_label = status.epic_key(epic_id)
+    if status.story_status(epic_label) not in (None, "done"):
+        try:
+            status.set_status(epic_label, "done")
+        except KeyError:
+            pass
+    await _emit_status_diffs(status, sink, last)
+    return True
+
+
 async def run_epic(
     epic_id: str, cfg: Config, status: SprintStatus, runner: GitRunner,
     sink: EventSink, control: RunControl, dry_run: bool, last: dict[str, str],
@@ -233,31 +270,7 @@ async def run_epic(
         await sink.emit(ev.log(f"[dry-run] ao completar a epic rodaria {RETROSPECTIVE}"))
         return
     if status.epic_complete(epic_id):
-        if cfg.autonomy.human_checkpoint == "retrospective":
-            await _checkpoint(f"epic {epic_id} concluída", cfg, sink, control)
-        retro_key = status.retrospective_key(epic_id)
-        retro_done = lambda: status.story_status(retro_key) == "done"
-        esc = await _run_one_phase(RETROSPECTIVE, str(epic_id), cfg, Advisor, sink, control,
-                                   dry_run, retro_done)
-        if esc is not None and not dry_run:
-            await _handle_recovery(esc, retro_key, str(epic_id), cfg, runner, sink, control)
-        if status.story_status(retro_key) != "done":   # backstop (a retro costuma gravar)
-            try:
-                status.set_status(retro_key, "done")
-            except KeyError:
-                await sink.emit(ev.log(f"'{retro_key}' não existe no sprint-status; pulando", "warn"))
-        ctx = GitContext(story_id="", epic_id=str(epic_id))
-        await apply_phase(cfg.phase(RETROSPECTIVE), runner, ctx, sink)
-
-        # epic concluída (stories + retrospective) -> vira o rótulo epic-N para done,
-        # senão ele fica preso em "in-progress" e a UI mostra status enganoso.
-        epic_label = status.epic_key(epic_id)
-        if status.story_status(epic_label) not in (None, "done"):
-            try:
-                status.set_status(epic_label, "done")
-            except KeyError:
-                pass  # nem todo sprint-status tem o rótulo epic-N
-        await _emit_status_diffs(status, sink, last)   # emite retro done + epic done
+        await _finalize_epic(epic_id, cfg, status, runner, sink, control, last)
     else:
         pending = [s.key for s in stories if status.story_status(s.key) != "done"]
         await sink.emit(ev.log(f"epic {epic_id} incompleta; pendentes: {pending}", "warn"))
@@ -287,6 +300,11 @@ async def run(
     try:
         if story:
             await process_story(story, cfg, status, runner, sink, control, dry_run, last)
+            # Se esta foi a ÚLTIMA story da epic, já roda a retrospective e fecha a epic.
+            if not dry_run and cfg.auto_retrospective:
+                parsed = parse_story_key(story)
+                if parsed:
+                    await _finalize_epic(str(parsed.epic), cfg, status, runner, sink, control, last)
         elif epic:
             await run_epic(epic, cfg, status, runner, sink, control, dry_run, last)
         else:

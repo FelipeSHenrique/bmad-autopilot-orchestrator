@@ -105,6 +105,7 @@ class Config:
     status_poll_interval: float = 1.0   # poll do sprint-status p/ status ao vivo (incl. in-progress)
     enable_gate: bool = True            # advisor revisa o resultado de cada fase antes de avançar
     max_gate_rounds: int = 2            # rodadas de correção do gate antes de pausar pro humano
+    auto_retrospective: bool = True     # ao concluir a última story da epic, já roda a retrospective
     advisor_prompt: str | None = None   # None => DEFAULT_ADVISOR_PROMPT
 
     @property
@@ -174,6 +175,7 @@ def load_config(path: str | Path) -> Config:
         log_dir=data.get("log_dir", Config.log_dir),
         max_turns_per_phase=int(data.get("max_turns_per_phase", Config.max_turns_per_phase)),
         enable_gate=bool(data.get("enable_gate", Config.enable_gate)),
+        auto_retrospective=bool(data.get("auto_retrospective", Config.auto_retrospective)),
     )
     return cfg
 
@@ -249,6 +251,7 @@ def config_for_project(
     advisor_prompt: str | None = None,
     recovery_policy: RecoveryPolicy | None = None,
     enable_gate: bool | None = None,
+    auto_retrospective: bool | None = None,
 ) -> Config:
     """Constrói uma Config programaticamente (usada pelo backend/app)."""
     return Config(
@@ -267,6 +270,7 @@ def config_for_project(
         phases=phases if phases is not None else default_phases(),
         advisor_prompt=advisor_prompt,
         enable_gate=True if enable_gate is None else enable_gate,
+        auto_retrospective=True if auto_retrospective is None else auto_retrospective,
     )
 
 
@@ -312,6 +316,8 @@ def load_project_overrides(project_dir: str | Path) -> dict[str, Any]:
         out["recovery_policy"] = data["recovery_policy"]
     if "enable_gate" in data:
         out["enable_gate"] = bool(data["enable_gate"])
+    if "auto_retrospective" in data:
+        out["auto_retrospective"] = bool(data["auto_retrospective"])
     if data.get("phases"):
         out["phases"] = {
             name: PhaseConfig(name=name, git=_parse_git((pd or {}).get("git")))

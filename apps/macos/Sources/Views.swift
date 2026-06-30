@@ -623,6 +623,7 @@ struct SettingsView: View {
     @State private var advisorPrompt = ""
     @State private var recoveryPolicy = "tiered"
     @State private var enableGate = true
+    @State private var autoRetro = true
     @State private var optionsJSON = ""   // invoke_template, human_checkpoint, models, phases
     @State private var loading = true
     @State private var parseError: String?
@@ -651,6 +652,9 @@ struct SettingsView: View {
 
                 Toggle("Gate de conclusão (advisor valida cada fase antes de avançar)", isOn: $enableGate)
                     .help("Ao fim de cada fase, o advisor revisa o resultado + itens deferidos e diz se pode seguir; reprovou, corrige na mesma sessão.")
+
+                Toggle("Auto-retrospective (última story da epic já fecha a epic)", isOn: $autoRetro)
+                    .help("Ao concluir a última story da epic, roda a retrospective automaticamente e marca a epic como done.")
 
                 HStack {
                     Text("Fluxo de git + opções (JSON)").font(.headline)
@@ -686,9 +690,11 @@ struct SettingsView: View {
         advisorPrompt = obj["advisor_prompt"] as? String ?? ""
         recoveryPolicy = obj["recovery_policy"] as? String ?? "tiered"
         enableGate = obj["enable_gate"] as? Bool ?? true
+        autoRetro = obj["auto_retrospective"] as? Bool ?? true
         obj.removeValue(forKey: "advisor_prompt")
         obj.removeValue(forKey: "recovery_policy")
         obj.removeValue(forKey: "enable_gate")
+        obj.removeValue(forKey: "auto_retrospective")
         obj.removeValue(forKey: "has_override_file")
         optionsJSON = prettyJSON(obj)
         loading = false
@@ -703,6 +709,7 @@ struct SettingsView: View {
         obj["advisor_prompt"] = advisorPrompt
         obj["recovery_policy"] = recoveryPolicy
         obj["enable_gate"] = enableGate
+        obj["auto_retrospective"] = autoRetro
         guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return }
         Task { if await store.saveConfigData(data) { dismiss() } }
     }

@@ -357,6 +357,45 @@ def test_status_changed_emitted_for_visibility(git_project: Path, fake_claude):
     assert ("review", "done") in transitions
 
 
+def test_last_story_auto_triggers_retrospective(git_project: Path, fake_claude):
+    """Rodar a ÚLTIMA story da epic (scope story) deve disparar a retrospective e
+    fechar a epic automaticamente (auto_retrospective)."""
+    ss = SprintStatus(git_project / SS_REL)
+    for k in ("7-2-create-api", "7-3-build-ui"):   # 7-1 já é done -> falta só a 7-10
+        ss.set_status(k, "done")
+    cfg = config_for_project(git_project, phases=safe_phases())   # auto_retrospective default True
+    sink = EventSink()
+    skills: list[str] = []
+    sink.add_callback(lambda e: skills.append(e.data.get("skill"))
+                      if e.kind == "phase_started" else None)
+
+    asyncio.run(run_loop(cfg, story="7-10-polish", epic=None, dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    assert "bmad-retrospective" in skills          # retro rodou automaticamente
+    ss2 = SprintStatus(git_project / SS_REL)
+    assert ss2.story_status("epic-7-retrospective") == "done"
+    assert ss2.story_status("epic-7") == "done"
+
+
+def test_last_story_no_auto_retro_when_disabled(git_project: Path, fake_claude):
+    """Com auto_retrospective=False, a última story NÃO dispara a retrospective."""
+    ss = SprintStatus(git_project / SS_REL)
+    for k in ("7-2-create-api", "7-3-build-ui"):
+        ss.set_status(k, "done")
+    cfg = config_for_project(git_project, phases=safe_phases(), auto_retrospective=False)
+    sink = EventSink()
+    skills: list[str] = []
+    sink.add_callback(lambda e: skills.append(e.data.get("skill"))
+                      if e.kind == "phase_started" else None)
+
+    asyncio.run(run_loop(cfg, story="7-10-polish", epic=None, dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    assert "bmad-retrospective" not in skills
+    assert SprintStatus(git_project / SS_REL).story_status("epic-7-retrospective") != "done"
+
+
 def test_gate_passes_advances(git_project: Path, fake_claude):
     """Gate aprova (default) → emite gate_review e a fase avança normalmente."""
     cfg = config_for_project(git_project, phases=safe_phases())   # enable_gate default True
