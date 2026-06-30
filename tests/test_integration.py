@@ -1,6 +1,8 @@
 """Integração worker → advisor com o ClaudeSDKClient fakeado (sem tokens)."""
 
 import asyncio
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -221,6 +223,85 @@ def test_token_limit_via_result_error(git_project: Path, fake_claude):
 
     assert "token_limit" in kinds
     assert kinds[-1] == "run_ended"
+
+
+RESUME_REL = ".autopilot/resume.json"
+
+
+def _markers(git_project: Path) -> dict:
+    p = git_project / RESUME_REL
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
+def test_resume_marker_cleared_on_completion(git_project: Path, fake_claude):
+    """Run normal: cada fase usa sessão FRESH (session_id, sem resume) e o
+    marcador é removido ao concluir — nada retomável sobra."""
+    rec = fake_claude
+    cfg = config_for_project(git_project, phases=safe_phases())
+    sink = EventSink()
+    sink.add_callback(lambda e: None)
+
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    # todas as sessões do worker foram fresh (session_id setado, resume None)
+    assert rec.sessions and all(s["resume"] is None and s["session_id"] for s in rec.sessions)
+    # marcador da story foi limpo na conclusão
+    assert "7-2-create-api" not in _markers(git_project)
+
+
+def test_resume_continues_after_interruption(git_project: Path, fake_claude):
+    """Limite de tokens no meio → marcador permanece → re-rodar RESUME a MESMA
+    sessão (options.resume) com phase_resumed, e conclui."""
+    rec = fake_claude
+    cfg = config_for_project(git_project, phases=safe_phases())
+
+    # run 1: interrompido por limite no 1º turno do worker (dev-story de 7-2)
+    rec.token_limit_mode = "ratelimit"
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=EventSink(), control=RunControl()))
+
+    markers = _markers(git_project)
+    assert "7-2-create-api" in markers           # marcador preservado
+    saved_sid = markers["7-2-create-api"]["session_id"]
+    assert saved_sid
+
+    # run 2: sem limite -> deve retomar a sessão salva
+    rec.token_limit_mode = None
+    rec.sessions.clear()
+    kinds: list[str] = []
+    sink = EventSink()
+    sink.add_callback(lambda e: kinds.append(e.kind))
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    assert "phase_resumed" in kinds
+    assert any(s["resume"] == saved_sid for s in rec.sessions)   # reabriu a MESMA sessão
+    assert SprintStatus(git_project / SS_REL).story_status("7-2-create-api") == "done"
+    assert "7-2-create-api" not in _markers(git_project)         # limpo ao concluir
+
+
+def test_resume_ttl_expired_starts_fresh(git_project: Path, fake_claude):
+    """Marcador além do TTL é ignorado: começa do zero (sessão nova), sem resume."""
+    rec = fake_claude
+    cfg = config_for_project(git_project, phases=safe_phases())
+    cfg.resume_ttl_hours = 24
+
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+    p = git_project / RESUME_REL
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"7-2-create-api": {
+        "skill": "bmad-dev-story", "session_id": "OLD-SESSION", "ts": old_ts}}))
+
+    rec.sessions.clear()
+    kinds: list[str] = []
+    sink = EventSink()
+    sink.add_callback(lambda e: kinds.append(e.kind))
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    assert not any(s["resume"] == "OLD-SESSION" for s in rec.sessions)  # não retomou o velho
+    assert "phase_resumed" not in kinds
 
 
 def test_stop_cancels_mid_turn(git_project: Path, fake_claude):

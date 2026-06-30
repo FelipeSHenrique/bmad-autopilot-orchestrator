@@ -51,6 +51,10 @@ def phase_ended(skill: str, target: str) -> Event:
     return Event("phase_ended", {"skill": skill, "target": target})
 
 
+def phase_resumed(skill: str, target: str) -> Event:
+    return Event("phase_resumed", {"skill": skill, "target": target})
+
+
 def assistant_delta(role: str, text: str) -> Event:
     # role: "worker" | "advisor"
     return Event("assistant_delta", {"role": role, "text": text})

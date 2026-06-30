@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import uuid
 from typing import Any, Callable
 
 from claude_agent_sdk import (
@@ -30,9 +31,10 @@ from claude_agent_sdk import (
 )
 
 from . import events as ev
+from . import resume
 from .advisor import Advisor, _delta_text, _raise_if_rate_limited
 from .config import Config, invoke_string
-from .events import EventSink, RunControl
+from .events import EventSink, RunControl, StopRequested, TokenLimitReached
 
 ROLE = "worker"
 
@@ -146,7 +148,12 @@ async def run_phase(
             )
         return PermissionResultAllow(updated_input=input_data)
 
-    options = ClaudeAgentOptions(
+    # Resume de sessão: se há um marcador desta fase (dentro do TTL), reabre a
+    # sessão exata; senão, fixa um session_id novo e registra o marcador.
+    resume_id = resume.marker_for(cfg, target_id, skill, cfg.resume_ttl_hours)
+    session_id = None if resume_id else str(uuid.uuid4())
+
+    common = dict(
         cwd=str(cfg.bmad_project_dir),
         system_prompt=WORKER_SYS,
         permission_mode="acceptEdits",
@@ -157,11 +164,20 @@ async def run_phase(
         hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[_dummy_pre_tool_hook])]},
         model=cfg.models.worker,
     )
+    options = (ClaudeAgentOptions(resume=resume_id, **common) if resume_id
+               else ClaudeAgentOptions(session_id=session_id, **common))
 
     client = ClaudeSDKClient(options=options)
     await client.connect()
     try:
-        await client.query(invocation)
+        if resume_id:
+            await sink.emit(ev.phase_resumed(skill, target_id))
+            await client.query(
+                "Você foi interrompido no meio desta fase. CONTINUE exatamente de onde "
+                "parou e conclua a fase; atualize o sprint-status ao terminar.")
+        else:
+            resume.set_marker(cfg, target_id, skill, session_id)  # sessão já existe (pós-connect)
+            await client.query(invocation)
         nudged = False  # (B) já demos um empurrão neste impasse?
         for _ in range(cfg.max_turns_per_phase):
             await control.gate()  # respeita pause; levanta StopRequested se stop
@@ -203,8 +219,18 @@ async def run_phase(
             await sink.emit(
                 ev.error(f"max_turns_per_phase atingido em {skill}:{target_id}")
             )
-    except (asyncio.CancelledError, Exception):
-        # Stop/erro: interrompe pedidos pendentes (evita "stream closed" no claude).
+    except (asyncio.CancelledError, StopRequested, TokenLimitReached):
+        # Pausa/stop/limite legítimos: MANTÉM o marcador (fase retomável do ponto exato).
+        try:
+            await client.interrupt()
+        except Exception:
+            pass
+        raise
+    except Exception:
+        # Erro inesperado: se estávamos resumindo, a sessão pode ter sumido — descarta o
+        # marcador para o próximo re-run começar do zero (evita resume "envenenado").
+        if resume_id:
+            resume.clear_marker(cfg, target_id)
         try:
             await client.interrupt()
         except Exception:
@@ -216,6 +242,8 @@ async def run_phase(
         except Exception:
             pass
 
+    # Conclusão normal: a fase terminou, não há o que resumir.
+    resume.clear_marker(cfg, target_id)
     await sink.emit(ev.phase_ended(skill, target_id))
 
 

@@ -143,9 +143,12 @@ struct EpicRow: View {
                     Spacer()
                     StatusBadge(status: st)
                     RunActionButton(done: st == "done", isRunning: isRunning,
-                                    runnable: runnable, playIcon: "play.circle",
+                                    runnable: runnable,
+                                    resumeAvailable: s.resumeAvailable ?? false,
+                                    playIcon: "play.circle",
                                     disabledReason: s.runnableReason,
-                                    play: { store.runStory(s.key) })
+                                    play: { store.runStory(s.key) },
+                                    playFresh: { store.runStory(s.key, fresh: true) })
                 }
             }
         } label: {
@@ -153,11 +156,14 @@ struct EpicRow: View {
                 Text("Epic \(epic.epic)").fontWeight(.semibold)
                 if let es = epic.epicStatus { StatusBadge(status: es) }
                 Spacer()
-                let epicRunning = store.running && epic.stories.contains { $0.key == store.currentTarget }
+                let epicRunning = store.running && store.runningEpic == epic.epic
                 RunActionButton(done: epic.epicStatus == "done", isRunning: epicRunning,
-                                runnable: epic.runnable ?? true, playIcon: "play.circle.fill",
+                                runnable: epic.runnable ?? true,
+                                resumeAvailable: epic.resumeAvailable ?? false,
+                                playIcon: "play.circle.fill",
                                 disabledReason: epic.runnableReason,
-                                play: { store.runEpic(epic.epic) })
+                                play: { store.runEpic(epic.epic) },
+                                playFresh: { store.runEpic(epic.epic, fresh: true) })
             }
         }
     }
@@ -170,9 +176,11 @@ struct RunActionButton: View {
     let done: Bool
     let isRunning: Bool
     let runnable: Bool
+    var resumeAvailable: Bool = false
     let playIcon: String
     let disabledReason: String?
     let play: () -> Void
+    var playFresh: () -> Void = {}
 
     var body: some View {
         if done {
@@ -186,6 +194,21 @@ struct RunActionButton: View {
             }
             .buttonStyle(.borderless).clickableCursor()
             .help(store.paused ? "Retomar" : "Pausar")
+        } else if resumeAvailable {
+            HStack(spacing: 4) {
+                Button(action: play) {
+                    Image(systemName: "arrow.clockwise.circle.fill").foregroundStyle(.blue)
+                }
+                .buttonStyle(.borderless).clickableCursor()
+                .disabled(!store.backendUp || store.running)
+                .help("Retomar de onde parou (mesma sessão)")
+                Button(action: playFresh) {
+                    Image(systemName: "xmark.circle").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless).clickableCursor()
+                .disabled(!store.backendUp || store.running)
+                .help("Começar do zero (descarta a sessão salva)")
+            }
         } else {
             Button(action: play) { Image(systemName: playIcon) }
                 .buttonStyle(.borderless)

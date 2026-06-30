@@ -81,6 +81,7 @@ class Recorder:
         self.answers: Any = None
         self.worker_mode = "ask"           # "ask" | "block" | "loop"
         self.token_limit_mode: str | None = None  # None | "ratelimit" | "result429"
+        self.sessions: list[dict] = []     # opções de sessão por client worker (resume/session_id)
         self.advisor_escalate: str | None = None   # skill que o advisor pede (recuperação)
         self.advisor_escalate_once = True          # consome após a 1ª decisão
 
@@ -93,6 +94,11 @@ class FakeClaudeSDKClient:
         self.options = options
         self.role = "worker" if getattr(options, "can_use_tool", None) is not None else "advisor"
         self._turn = 0
+        if self.role == "worker" and _REC is not None:
+            _REC.sessions.append({
+                "resume": getattr(options, "resume", None),
+                "session_id": getattr(options, "session_id", None),
+            })
 
     async def connect(self) -> None:
         _REC.connects.append(self.role)

@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from . import detect as detect_mod
 from . import events as ae
+from . import resume as resume_mod
 from .config import (
     DEFAULT_ADVISOR_PROMPT,
     Config,
@@ -167,6 +168,7 @@ class RunRequest(BaseModel):
     dry_run: bool = False
     human_checkpoint: str = "none"
     safe: bool = True   # branch + commits locais; sem push/PR/merge
+    fresh: bool = False  # "começar do zero": descarta a sessão retomável
 
 
 class ControlRequest(BaseModel):
@@ -211,7 +213,17 @@ def create_app() -> FastAPI:
     @app.get("/projects/{pid}/detect")
     async def detect_project(pid: str) -> dict[str, Any]:
         proj = _find_project(pid)
-        return detect_mod.detect(proj["path"])
+        info = detect_mod.detect(proj["path"])
+        # anota resume_available por story/epic (sessão retomável dentro do TTL)
+        cfg = config_for_project(proj["path"])
+        targets = resume_mod.available_targets(cfg, cfg.resume_ttl_hours)
+        for e in info.get("epics", []):
+            stories = e.get("stories", [])
+            for s in stories:
+                s["resume_available"] = s.get("key") in targets
+            e["resume_available"] = (str(e.get("epic")) in targets
+                                     or any(s.get("resume_available") for s in stories))
+        return info
 
     @app.get("/projects/{pid}/status")
     async def project_status(pid: str) -> dict[str, Any]:
@@ -289,6 +301,11 @@ def create_app() -> FastAPI:
             advisor_prompt=ov.get("advisor_prompt"),
             recovery_policy=ov.get("recovery_policy"),
         )
+        if body.fresh:   # "começar do zero": descarta sessão(ões) retomável(is)
+            if body.scope == "epic":
+                resume_mod.clear_all(cfg)
+            else:
+                resume_mod.clear_marker(cfg, body.id)
         mgr.start(cfg, body.scope, body.id, body.dry_run)
         return {"ok": True, "current": mgr.current}
 

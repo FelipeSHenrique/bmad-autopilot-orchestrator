@@ -9,10 +9,11 @@ struct RunRequest: Encodable {
     let dryRun: Bool
     let humanCheckpoint: String
     let safe: Bool
+    var fresh: Bool = false   // "começar do zero": descarta a sessão retomável
 
     enum CodingKeys: String, CodingKey {
         case projectId = "project_id"
-        case scope, id, safe
+        case scope, id, safe, fresh
         case dryRun = "dry_run"
         case humanCheckpoint = "human_checkpoint"
     }

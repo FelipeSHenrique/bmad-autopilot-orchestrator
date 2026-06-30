@@ -27,6 +27,7 @@ final class RunStore: ObservableObject {
     // estado do run
     @Published var running = false
     @Published var currentTarget = ""
+    @Published var runningEpic: Int?                 // epic em execução (estável durante o run)
     @Published var phases: [PhaseRow] = RunStore.basePhases()
     @Published var workerLog = ""
     @Published var advisorLog = ""
@@ -119,10 +120,10 @@ final class RunStore: ObservableObject {
         }
     }
 
-    func runStory(_ key: String) { startRun(scope: "story", id: key) }
-    func runEpic(_ epic: Int) { startRun(scope: "epic", id: "\(epic)") }
+    func runStory(_ key: String, fresh: Bool = false) { startRun(scope: "story", id: key, fresh: fresh) }
+    func runEpic(_ epic: Int, fresh: Bool = false) { startRun(scope: "epic", id: "\(epic)", fresh: fresh) }
 
-    func startRun(scope: String, id: String) {
+    func startRun(scope: String, id: String, fresh: Bool = false) {
         guard let p = selected else { lastError = "Selecione um projeto primeiro."; return }
         guard backendUp else { lastError = "Backend offline."; return }
         guard !running else { lastError = "Já existe um run ativo. Pare-o antes de iniciar outro."; return }
@@ -131,7 +132,7 @@ final class RunStore: ObservableObject {
             do {
                 try await api.run(RunRequest(
                     projectId: p.id, scope: scope, id: id,
-                    dryRun: dryRun, humanCheckpoint: humanCheckpoint, safe: safeMode))
+                    dryRun: dryRun, humanCheckpoint: humanCheckpoint, safe: safeMode, fresh: fresh))
             } catch {
                 lastError = (error as? BackendError)?.message ?? error.localizedDescription
             }
@@ -214,12 +215,16 @@ final class RunStore: ObservableObject {
         case "run_started":
             resetRun(); running = true
             currentTarget = ev.target ?? ""
+            scope = ev.scope ?? scope
+            runningEpic = (ev.scope == "epic")
+                ? Int(ev.target ?? "") : Self.epicOf(ev.target ?? "")
             dryRun = ev.dryRun ?? dryRun
             // story → 3 fases; epic → 3 + retrospective (que só roda no fim da epic)
             phases = (ev.scope == "epic") ? RunStore.epicPhases() : RunStore.storyPhases()
         case "run_ended":
             running = false
             paused = false
+            runningEpic = nil
             recovery = nil   // dispensa qualquer sheet de recuperação pendente
             // para qualquer spinner: fase que ficou "running" volta a pending
             for i in phases.indices where phases[i].state == .running {
@@ -236,6 +241,9 @@ final class RunStore: ObservableObject {
         case "phase_ended":
             setPhase(ev.skill ?? "", .done)
             closeStream()
+        case "phase_resumed":
+            addEntry(.init(kind: .note, title: "↻ retomando",
+                           subtitle: "\(ev.skill ?? "") · \(ev.target ?? "") — continuando a sessão"))
         case "assistant_delta":
             let role = ev.role ?? "worker"
             // O advisor não vira bolha: a saída dele é JSON cru e já aparece
@@ -304,6 +312,11 @@ final class RunStore: ObservableObject {
 
     func status(for storyKey: String, fallback: String) -> String {
         liveStatus[storyKey] ?? fallback
+    }
+
+    /// Número da epic a partir de uma chave de story ("2-1-fix-shout" -> 2).
+    static func epicOf(_ storyKey: String) -> Int? {
+        Int(storyKey.split(separator: "-").first ?? "")
     }
 
     /// Formata um timestamp unix (resets_at do rate-limit) como hora local HH:mm.

@@ -119,10 +119,12 @@ struct StoryInfo: Identifiable, Codable, Hashable {
     let status: String
     let runnable: Bool?
     let runnableReason: String?
+    let resumeAvailable: Bool?
 
     enum CodingKeys: String, CodingKey {
         case key, num, status, runnable
         case runnableReason = "runnable_reason"
+        case resumeAvailable = "resume_available"
     }
 }
 
@@ -134,12 +136,14 @@ struct EpicInfo: Identifiable, Codable, Hashable {
     let retrospective: String?
     let runnable: Bool?
     let runnableReason: String?
+    let resumeAvailable: Bool?
 
     enum CodingKeys: String, CodingKey {
         case epic, stories, runnable
         case epicStatus = "epic_status"
         case retrospective
         case runnableReason = "runnable_reason"
+        case resumeAvailable = "resume_available"
     }
 }
 
