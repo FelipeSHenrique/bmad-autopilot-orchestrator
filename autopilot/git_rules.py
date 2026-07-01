@@ -37,9 +37,17 @@ class GitRunner:
     def run(self, args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
         if self.dry_run:
             return subprocess.CompletedProcess(args, 0, "[dry-run]", "")
-        return subprocess.run(
-            args, cwd=self.cwd, check=check, text=True, capture_output=True
-        )
+        r = subprocess.run(args, cwd=self.cwd, text=True, capture_output=True)
+        if check and r.returncode != 0:
+            # Sem isto, o CalledProcessError padrão esconde o stderr do git — o
+            # usuário vê só "returned non-zero exit status 1". Surface o motivo
+            # real (hook de pre-commit, assinatura GPG, identidade ausente, etc.).
+            detail = (r.stderr or "").strip() or (r.stdout or "").strip()
+            raise RuntimeError(
+                f"git falhou ({' '.join(args)}) — exit {r.returncode}"
+                + (f":\n{detail}" if detail else "")
+            )
+        return r
 
     def current_branch(self) -> str:
         if self.dry_run:
