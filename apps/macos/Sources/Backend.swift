@@ -210,33 +210,14 @@ final class BackendController {
         p.executableURL = URL(fileURLWithPath: exe)
         p.arguments = args
         if let cwd { p.currentDirectoryURL = URL(fileURLWithPath: cwd) }
-        p.environment = augmentedEnvironment()
         try? p.run()
         process = p
     }
 
-    /// Um .app aberto pelo Finder tem PATH mínimo (sem homebrew/npm). Prepende os
-    /// locais comuns para o backend e seus subprocessos (claude/git/gh) os acharem.
-    private func augmentedEnvironment() -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let extra = [
-            "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin",
-            "\(home)/.npm-global/bin", "\(home)/.local/bin", "\(home)/node_modules/.bin",
-        ]
-        let current = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
-        env["PATH"] = (extra + [current]).joined(separator: ":")
-        return env
-    }
-
-    /// Resolve como lançar o backend:
-    /// 1) binário embutido em Resources/ (release, PyInstaller)
-    /// 2) AUTOPILOT_PYTHON + AUTOPILOT_REPO (env, dev)
-    /// 3) <repo>/.venv/bin/python -m autopilot serve (dev)
+    /// Resolve como lançar o backend (a partir do repo, via venv):
+    /// 1) AUTOPILOT_PYTHON + AUTOPILOT_REPO (env, override)
+    /// 2) <repo>/.venv/bin/python -m autopilot serve
     private func backendCommand() -> (String, [String], String?) {
-        if let bundled = Bundle.main.url(forResource: "autopilot-backend", withExtension: nil) {
-            return (bundled.path, ["serve", "--port", "\(port)"], nil)
-        }
         let env = ProcessInfo.processInfo.environment
         let repo = env["AUTOPILOT_REPO"] ?? defaultRepoRoot()
         let python = env["AUTOPILOT_PYTHON"] ?? "\(repo)/.venv/bin/python"

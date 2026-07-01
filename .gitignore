@@ -13,10 +13,6 @@ CLAUDE.md
 build/
 dist/
 
-# macOS app (apps/macos)
+# macOS app (apps/macos) — dev via `swift build`
 apps/macos/.build/
-apps/macos/.build-xcode/
-apps/macos/AutopilotApp.xcodeproj/
-apps/macos/Resources/autopilot-backend
-.build-pyinstaller/
 *.xcuserstate

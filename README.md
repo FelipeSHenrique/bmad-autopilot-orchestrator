@@ -81,8 +81,7 @@ through conversation memory.
 - **An authenticated Claude session** — the `claude-agent-sdk` uses your existing Claude login.
 - **`git`** and **`gh`** (GitHub CLI) on `PATH` — required only if your git rules open/merge PRs.
 - A BMAD **v6** project to point at.
-- *(macOS app only)* macOS 14+, Swift toolchain (Xcode), and optionally
-  [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+- *(macOS app only)* macOS 14+ and a Swift toolchain (Xcode command-line tools).
 
 ---
 
@@ -193,7 +192,7 @@ worker messages, an "asked the advisor" banner, and the advisor's choice + ratio
 ### Architecture
 
 ```
-AutopilotApp.app (SwiftUI)  ──REST + WebSocket──►  autopilot serve (FastAPI)  ──►  core (loop/worker/advisor)
+AutopilotApp (SwiftUI, swift build)  ──REST + WebSocket──►  autopilot serve (FastAPI)  ──►  core (loop/worker/advisor)
 ```
 
 The backend is the `autopilot serve` subcommand (port 8765 by default). The app connects to an
@@ -213,26 +212,15 @@ swift build && swift run            # or open it in Xcode (below)
 Add a project with the sidebar's **＋** button (pick a BMAD project folder), see its
 epics/stories with colored status badges, and press Play on a story or epic.
 
-### Open in Xcode / build the `.app`
+### How the app finds the backend
 
-```bash
-brew install xcodegen            # once
-cd apps/macos
-xcodegen generate                # generates AutopilotApp.xcodeproj
-open AutopilotApp.xcodeproj       # or: xcodebuild -scheme AutopilotApp build
-```
+The app talks to the backend on `http://127.0.0.1:8765`. If it doesn't find one already
+running, it spawns `./.venv/bin/python -m autopilot serve` from the repo. Point it at custom
+paths with the `AUTOPILOT_REPO` / `AUTOPILOT_PYTHON` environment variables. The usual backend
+requirements apply (Claude authenticated, `git`, `gh`).
 
-### Self-contained `.app` (bundled backend)
-
-```bash
-./apps/macos/build_backend.sh    # PyInstaller -> apps/macos/Resources/autopilot-backend
-cd apps/macos && xcodegen generate && xcodebuild -scheme AutopilotApp build
-```
-
-In release builds the app launches the bundled binary from `Resources/`; in development it
-uses the venv (`AUTOPILOT_REPO` / `AUTOPILOT_PYTHON` let you point at custom paths). The same
-backend requirements apply (Claude authenticated, `git`, `gh`). It's a personal-use app:
-ad-hoc code signing (notarize only if you intend to distribute).
+It's a personal-use dev app — run it with `swift build` / `swift run`; there's no packaged
+`.app` to install.
 
 ---
 
