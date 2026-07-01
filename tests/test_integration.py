@@ -86,6 +86,31 @@ def test_epic_marks_label_done(git_project: Path, fake_claude):
     assert ss.epic_complete(7)
 
 
+def test_epic_closes_when_retro_already_done_inline(git_project: Path, fake_claude):
+    """Regressão: se a skill de code-review encadeou a retrospective INLINE (retro já
+    'done' quando o orquestrador chega em _finalize_epic), o rótulo epic-N ainda tem
+    que virar 'done' — o early-return não pode deixar a epic presa em in-progress."""
+    ss0 = SprintStatus(git_project / SS_REL)
+    for s in ("7-1-define-schema", "7-2-create-api", "7-3-build-ui", "7-10-polish"):
+        ss0.set_status(s, "done")
+    ss0.set_status("epic-7-retrospective", "done")   # retro JÁ feita (inline na skill)
+    ss0.set_status("epic-7", "in-progress")          # rótulo ainda aberto
+
+    rec = fake_claude
+    sink = EventSink()
+    skills: list[str] = []
+    sink.add_callback(lambda e: skills.append(e.data.get("skill"))
+                      if e.kind == "phase_started" else None)
+    cfg = config_for_project(git_project, phases=safe_phases())
+
+    asyncio.run(run_loop(cfg, story=None, epic="7", dry_run=False,
+                         sink=sink, control=RunControl()))
+
+    ss = SprintStatus(git_project / SS_REL)
+    assert ss.story_status("epic-7") == "done"          # fechou mesmo com retro inline
+    assert "bmad-retrospective" not in skills           # NÃO re-rodou a retro (já done)
+
+
 def test_recovery_tiered_runs_quick_dev(git_project: Path, fake_claude):
     """Política 'tiered': escalação para quick-dev (código) roda AUTÔNOMA, sem pausar."""
     rec = fake_claude

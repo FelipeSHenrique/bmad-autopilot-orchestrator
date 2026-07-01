@@ -221,35 +221,46 @@ async def _finalize_epic(
     epic_id: str, cfg: Config, status: SprintStatus, runner: GitRunner,
     sink: EventSink, control: RunControl, last: dict[str, str],
 ) -> bool:
-    """Se a epic está completa (todas as stories done) e a retrospective ainda não
-    rodou, roda a retrospective e marca retro/epic como done. Retorna True se rodou.
-    Usado tanto pelo run de epic quanto após a ÚLTIMA story (fechamento automático)."""
+    """Fecha a epic: garante a retrospective e vira o rótulo epic-N para done.
+
+    Robusto às duas ordens em que a retro pode acontecer:
+    - o orquestrador roda a retrospective aqui (fluxo padrão), OU
+    - a skill de code-review já encadeou a retrospective inline (o advisor aceitou o
+      next-step "Run epic-N retrospective") — nesse caso `retro_key` já está done e só
+      falta virar o rótulo da epic. O flip fica FORA do bloco "retro não feita" de
+      propósito: senão o early-return quando a retro já está done deixaria a epic presa
+      em in-progress. Retorna True se rodou a retro e/ou fechou o rótulo da epic."""
     if not status.epic_complete(epic_id):
         return False
     retro_key = status.retrospective_key(epic_id)
-    if status.story_status(retro_key) == "done":
-        return False  # retrospective já feita
-    if cfg.autonomy.human_checkpoint == "retrospective":
-        await _checkpoint(f"epic {epic_id} concluída", cfg, sink, control)
-    retro_done = lambda: status.story_status(retro_key) == "done"
-    esc = await _run_one_phase(RETROSPECTIVE, str(epic_id), cfg, Advisor, sink, control,
-                               False, retro_done)
-    if esc is not None:
-        await _handle_recovery(esc, retro_key, str(epic_id), cfg, runner, sink, control)
-    if status.story_status(retro_key) != "done":   # backstop (a retro costuma gravar)
-        try:
-            status.set_status(retro_key, "done")
-        except KeyError:
-            await sink.emit(ev.log(f"'{retro_key}' não existe no sprint-status; pulando", "warn"))
-    ctx = GitContext(story_id="", epic_id=str(epic_id))
-    await apply_phase(cfg.phase(RETROSPECTIVE), runner, ctx, sink)
-    # vira o rótulo epic-N para done (senão fica preso em in-progress)
     epic_label = status.epic_key(epic_id)
+    epic_open = status.story_status(epic_label) not in (None, "done")
+    if status.story_status(retro_key) == "done" and not epic_open:
+        return False  # nada a fazer: retro feita E rótulo já fechado
+
+    if status.story_status(retro_key) != "done":
+        if cfg.autonomy.human_checkpoint == "retrospective":
+            await _checkpoint(f"epic {epic_id} concluída", cfg, sink, control)
+        retro_done = lambda: status.story_status(retro_key) == "done"
+        esc = await _run_one_phase(RETROSPECTIVE, str(epic_id), cfg, Advisor, sink, control,
+                                   False, retro_done)
+        if esc is not None:
+            await _handle_recovery(esc, retro_key, str(epic_id), cfg, runner, sink, control)
+        if status.story_status(retro_key) != "done":   # backstop (a retro costuma gravar)
+            try:
+                status.set_status(retro_key, "done")
+            except KeyError:
+                await sink.emit(ev.log(f"'{retro_key}' não existe no sprint-status; pulando", "warn"))
+
+    # vira o rótulo epic-N para done SEMPRE que a epic está completa e a retro feita —
+    # inclusive quando a retro rodou inline na skill (early-return acima não se aplica).
     if status.story_status(epic_label) not in (None, "done"):
         try:
             status.set_status(epic_label, "done")
         except KeyError:
             pass
+    ctx = GitContext(story_id="", epic_id=str(epic_id))
+    await apply_phase(cfg.phase(RETROSPECTIVE), runner, ctx, sink)
     await _emit_status_diffs(status, sink, last)
     return True
 
