@@ -176,10 +176,13 @@ struct EpicRow: View {
         } label: {
             HStack {
                 Text("Epic \(epic.epic)").fontWeight(.semibold)
-                if let es = epic.epicStatus { StatusBadge(status: es) }
+                // badge da epic também ao vivo: liveStatus (poller emite epic-N) com
+                // fallback no valor do detect
+                let eStatus = store.status(for: "epic-\(epic.epic)", fallback: epic.epicStatus ?? "")
+                if !eStatus.isEmpty { StatusBadge(status: eStatus) }
                 Spacer()
                 let epicRunning = store.running && store.runningEpic == epic.epic
-                RunActionButton(done: epic.epicStatus == "done", isRunning: epicRunning,
+                RunActionButton(done: eStatus == "done", isRunning: epicRunning,
                                 runnable: epic.runnable ?? true,
                                 resumeAvailable: epic.resumeAvailable ?? false,
                                 playIcon: "play.circle.fill",
