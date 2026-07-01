@@ -49,6 +49,29 @@ class GitRunner:
             )
         return r
 
+    def ignore_locally(self, pattern: str) -> None:
+        """Garante que `pattern` esteja no .git/info/exclude do repo alvo — um
+        ignore LOCAL, sem alterar o .gitignore versionado do usuário. Evita que o
+        `git add -A` das fases commite os internals do orquestrador (`.autopilot/`)
+        dentro do repositório do projeto."""
+        if self.dry_run:
+            return
+        try:
+            r = self.run(["git", "rev-parse", "--git-path", "info/exclude"], check=False)
+            rel = (r.stdout or "").strip()
+            if not rel:
+                return
+            path = Path(rel)
+            if not path.is_absolute():
+                path = self.cwd / path
+            existing = path.read_text() if path.exists() else ""
+            if pattern not in existing.split():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                sep = "" if (not existing or existing.endswith("\n")) else "\n"
+                path.write_text(existing + sep + pattern + "\n")
+        except OSError:
+            pass
+
     def current_branch(self) -> str:
         if self.dry_run:
             return "<branch>"

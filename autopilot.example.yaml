@@ -34,13 +34,13 @@ phases:
   bmad-create-story:
     git:
       - create_branch: "story/{story_id}"
-      - commit: "story: draft {story_id}"
+      - commit: "chore: draft story {story_id}"
   bmad-dev-story:
     git:
       - commit: "feat: implement {story_id}"
   bmad-code-review:
     git:
-      - commit: "review: {story_id}"
+      - commit: "chore: review {story_id}"
       - open_pr: { base: main, title: "{story_id}" }
       - merge_pr: { method: squash }
   bmad-retrospective:

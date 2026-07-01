@@ -190,13 +190,13 @@ def default_phases() -> dict[str, PhaseConfig]:
     return {
         CREATE_STORY: PhaseConfig(CREATE_STORY, [
             GitAction("create_branch", "story/{story_id}"),
-            GitAction("commit", "story: draft {story_id}"),
+            GitAction("commit", "chore: draft story {story_id}"),
         ]),
         DEV_STORY: PhaseConfig(DEV_STORY, [
             GitAction("commit", "feat: implement {story_id}"),
         ]),
         CODE_REVIEW: PhaseConfig(CODE_REVIEW, [
-            GitAction("commit", "review: {story_id}"),
+            GitAction("commit", "chore: review {story_id}"),
             GitAction("open_pr", {"base": "main", "title": "{story_id}"}),
             GitAction("merge_pr", {"method": "squash"}),
         ]),
@@ -218,13 +218,13 @@ def safe_phases() -> dict[str, PhaseConfig]:
     return {
         CREATE_STORY: PhaseConfig(CREATE_STORY, [
             GitAction("create_branch", "autopilot/{story_id}"),
-            GitAction("commit", "story: draft {story_id}"),
+            GitAction("commit", "chore: draft story {story_id}"),
         ]),
         DEV_STORY: PhaseConfig(DEV_STORY, [
             GitAction("commit", "feat: implement {story_id}"),
         ]),
         CODE_REVIEW: PhaseConfig(CODE_REVIEW, [
-            GitAction("commit", "review: {story_id}"),
+            GitAction("commit", "chore: review {story_id}"),
         ]),
         RETROSPECTIVE: PhaseConfig(RETROSPECTIVE, [
             GitAction("commit", "chore: retrospective epic-{epic_id}"),

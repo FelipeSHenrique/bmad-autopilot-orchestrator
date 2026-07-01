@@ -111,6 +111,23 @@ def test_epic_closes_when_retro_already_done_inline(git_project: Path, fake_clau
     assert "bmad-retrospective" not in skills           # NÃO re-rodou a retro (já done)
 
 
+def test_autopilot_internals_not_committed(git_project: Path, fake_claude):
+    """Os internals do orquestrador (`.autopilot/`) não podem entrar no repo do
+    usuário: o run adiciona `.autopilot/` ao .git/info/exclude e o `git add -A`
+    das fases não o comita."""
+    import subprocess
+    cfg = config_for_project(git_project, phases=safe_phases())
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=EventSink(), control=RunControl()))
+
+    assert (git_project / ".autopilot").exists()          # existe no disco
+    tracked = subprocess.run(["git", "ls-files"], cwd=git_project,
+                             capture_output=True, text=True).stdout
+    assert ".autopilot/" not in tracked                   # mas NÃO é rastreado
+    exclude = (git_project / ".git/info/exclude").read_text()
+    assert ".autopilot/" in exclude                       # está no ignore local
+
+
 def test_recovery_tiered_runs_quick_dev(git_project: Path, fake_claude):
     """Política 'tiered': escalação para quick-dev (código) roda AUTÔNOMA, sem pausar."""
     rec = fake_claude

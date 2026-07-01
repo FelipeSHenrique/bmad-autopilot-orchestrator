@@ -296,6 +296,9 @@ async def run(
     await sink.emit(ev.run_started(scope, target, dry_run))
     status = SprintStatus(cfg.sprint_status_file)
     runner = GitRunner(cfg.bmad_project_dir, dry_run=dry_run)
+    if not dry_run:
+        # não deixa os internals do orquestrador entrarem no repo do usuário
+        runner.ignore_locally(".autopilot/")
 
     # Visibilidade de status ao vivo: snapshot inicial + poller do sprint-status
     # (só em run real; em dry-run o arquivo não muda e usamos emits simulados).
