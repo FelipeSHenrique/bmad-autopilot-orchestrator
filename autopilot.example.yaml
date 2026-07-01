@@ -13,7 +13,7 @@ invoke_template: "Run the {skill} workflow for {story_id}."
 
 models:
   worker: claude-opus-4-8
-  advisor: claude-sonnet-5   # advisor mais barato/rápido; suba p/ opus se quiser mais rigor
+  advisor: claude-opus-4-8   # advisor >= worker (é o guardião de escopo/gate — mantenha forte)
 
 autonomy:
   human_checkpoint: none     # none | end-of-story | retrospective

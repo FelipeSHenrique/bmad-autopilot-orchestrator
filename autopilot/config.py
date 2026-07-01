@@ -75,7 +75,7 @@ class PhaseConfig:
 @dataclass
 class Models:
     worker: str = "claude-opus-4-8"
-    advisor: str = "claude-sonnet-5"
+    advisor: str = "claude-opus-4-8"
 
 
 @dataclass
