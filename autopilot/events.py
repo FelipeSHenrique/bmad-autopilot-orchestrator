@@ -145,6 +145,10 @@ class EventSink:
     def add_callback(self, cb: Callback) -> None:
         self._callbacks.append(cb)
 
+    def remove_callback(self, cb: Callback) -> None:
+        if cb in self._callbacks:
+            self._callbacks.remove(cb)
+
     def subscribe(self) -> asyncio.Queue[Event]:
         q: asyncio.Queue[Event] = asyncio.Queue()
         self._queues.append(q)

@@ -128,6 +128,24 @@ def test_autopilot_internals_not_committed(git_project: Path, fake_claude):
     assert ".autopilot/" in exclude                       # está no ignore local
 
 
+def test_events_persisted_for_debug(git_project: Path, fake_claude):
+    """O stream de eventos é salvo em .autopilot/logs/events.jsonl (menos os deltas
+    token-a-token), pra debug pós-run — inclui o veredito do gate (gate_review, com os
+    blockers), fases, git e run_started/ended."""
+    cfg = config_for_project(git_project, phases=safe_phases())
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=EventSink(), control=RunControl()))
+
+    log = git_project / ".autopilot/logs/events.jsonl"
+    assert log.exists()
+    rows = [json.loads(l) for l in log.read_text().splitlines() if l.strip()]
+    kinds = {r["kind"] for r in rows}
+    assert "run_started" in kinds and "run_ended" in kinds
+    assert "gate_review" in kinds                 # o motivo do gate fica em disco
+    assert "assistant_delta" not in kinds         # deltas token-a-token ficam de fora
+    assert all("ts" in r for r in rows)           # cada evento tem timestamp
+
+
 def test_recovery_tiered_runs_quick_dev(git_project: Path, fake_claude):
     """Política 'tiered': escalação para quick-dev (código) roda AUTÔNOMA, sem pausar."""
     rec = fake_claude

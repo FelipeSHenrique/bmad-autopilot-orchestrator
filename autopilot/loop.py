@@ -5,6 +5,7 @@ humanos (via RunControl)."""
 from __future__ import annotations
 
 import asyncio
+import json
 
 from . import events as ev
 from . import router
@@ -46,6 +47,24 @@ async def _status_poller(
     while True:
         await asyncio.sleep(interval)
         await _emit_status_diffs(status, sink, last)
+
+
+def _make_event_logger(cfg: Config):
+    """Callback que persiste cada evento (menos os deltas token-a-token — puro ruído/
+    volume) em <project>/.autopilot/logs/events.jsonl. Assim a aba 'Tudo' inteira fica
+    em disco e auditável depois do run: gate_review (com os blockers), fases, tool_use,
+    git, status, checkpoints, recuperações, erros e o run_started/ended. Falha de I/O
+    nunca derruba o run (o emit já engole exceções de callback)."""
+    path = cfg.bmad_project_dir / ".autopilot" / "logs" / "events.jsonl"
+
+    def _cb(e: ev.Event) -> None:
+        if e.kind == "assistant_delta":
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(e.to_dict(), ensure_ascii=False) + "\n")
+
+    return _cb
 
 
 async def _checkpoint(label: str, cfg: Config, sink: EventSink, control: RunControl) -> None:
@@ -285,6 +304,12 @@ async def run(
 ) -> None:
     scope = "story" if story else "epic"
     target = story or epic or ""
+    # Persiste o stream de eventos em disco (trilha de debug). Registrado ANTES do
+    # run_started p/ capturá-lo; removido no finally p/ não duplicar entre runs no
+    # mesmo sink (o servidor reusa o sink).
+    log_cb = _make_event_logger(cfg) if not dry_run else None
+    if log_cb is not None:
+        sink.add_callback(log_cb)
     await sink.emit(ev.run_started(scope, target, dry_run))
     status = SprintStatus(cfg.sprint_status_file)
     runner = GitRunner(cfg.bmad_project_dir, dry_run=dry_run)
@@ -333,6 +358,8 @@ async def run(
         await sink.emit(ev.run_ended(False, str(exc)))
         raise
     finally:
+        if log_cb is not None:
+            sink.remove_callback(log_cb)
         if poller is not None:
             poller.cancel()
             try:
