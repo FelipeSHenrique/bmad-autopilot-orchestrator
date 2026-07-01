@@ -185,10 +185,10 @@ async def run_phase(
                 "parou e conclua a fase; atualize o sprint-status ao terminar.")
         else:
             await client.query(invocation)
-        nudged = False  # (B) já demos um empurrão neste impasse?
+        nudged_finalize = False  # já demos o empurrão de "finalize" neste impasse?
         for _ in range(cfg.max_turns_per_phase):
             await control.gate()  # respeita pause; levanta StopRequested se stop
-            last_text = await _drain_turn(client, sink)
+            last_text, activity = await _drain_turn(client, sink)
 
             # 1) conclusão autoritativa por status -> fase concluída.
             if done_predicate is not None and done_predicate():
@@ -205,15 +205,29 @@ async def run_phase(
                 answer = await advisor.decide_text(last_text)
                 await control.gate()
                 await client.query(answer)
-                nudged = False  # houve interação -> reseta o empurrão
+                nudged_finalize = False  # houve interação -> reseta o empurrão
                 continue
 
-            # 3) (B) não-done e SEM pergunta clara: não encerrar em silêncio (senão o
-            # orquestrador avançaria o status por cima de uma decisão não respondida).
-            # Dá UM empurrão (auto-decidir/finalizar). Se nada mudar, conclui (break) e
-            # o orquestrador grava o status — sem ficar consultando o advisor em loop.
-            if last_text.strip() and not nudged:
-                nudged = True
+            # 3) não-done e SEM pergunta, mas o turno teve ATIVIDADE (usou tools): a
+            # skill ainda está TRABALHANDO — ex.: disparou as camadas de review em
+            # subagentes, ou está lendo/editando. NÃO atropela (isso matava os
+            # subagentes em background e forçava re-runs caros): pede para CONTINUAR e
+            # concluir o que iniciou, deixando o trabalho assíncrono terminar.
+            if activity:
+                nudged_finalize = False
+                await control.gate()
+                await client.query(
+                    "Continue e conclua o que você iniciou — se disparou camadas de "
+                    "review/subagentes, deixe-as terminar e então consolide o veredito e "
+                    "atualize o sprint-status. Não faça perguntas em texto livre; use "
+                    "AskUserQuestion se precisar de uma decisão.")
+                continue
+
+            # 4) turno OCIOSO (sem tool, sem pergunta): pode estar travado aguardando uma
+            # decisão. Dá UM empurrão (auto-decidir/finalizar). Se ainda assim nada mudar,
+            # conclui (break) e o orquestrador grava o status — sem consultar em loop.
+            if last_text.strip() and not nudged_finalize:
+                nudged_finalize = True
                 await control.gate()
                 await client.query(
                     "Se você está aguardando uma decisão ou exibindo opções, escolha a "
@@ -258,9 +272,14 @@ async def run_phase(
     return last_text, active_sid
 
 
-async def _drain_turn(client: ClaudeSDKClient, sink: EventSink) -> str:
-    """Consome um ciclo de resposta, emitindo deltas/tool_use; devolve o texto."""
+async def _drain_turn(client: ClaudeSDKClient, sink: EventSink) -> tuple[str, bool]:
+    """Consome um ciclo de resposta, emitindo deltas/tool_use.
+
+    Devolve (texto, houve_atividade), onde houve_atividade indica uso de tools neste
+    turno (ex.: Task/subagentes, Read, Edit). O worker usa isso para saber que a skill
+    ainda está TRABALHANDO (não travada) e não atropelar trabalho em andamento."""
     parts: list[str] = []
+    activity = False
     async for msg in client.receive_response():
         await _raise_if_rate_limited(msg, sink)
         if isinstance(msg, StreamEvent):
@@ -272,7 +291,8 @@ async def _drain_turn(client: ClaudeSDKClient, sink: EventSink) -> str:
                 if isinstance(block, TextBlock):
                     parts.append(block.text)
                 elif isinstance(block, ToolUseBlock):
+                    activity = True
                     await sink.emit(ev.tool_use(ROLE, block.name, block.input))
         elif isinstance(msg, ResultMessage):
             break
-    return "".join(parts)
+    return "".join(parts), activity

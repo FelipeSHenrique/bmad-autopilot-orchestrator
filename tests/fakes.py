@@ -154,6 +154,24 @@ class FakeClaudeSDKClient:
                 yield FakeResultMessage(is_error=True, api_error_status=429)
             return
 
+        if _REC.worker_mode == "activity":
+            # simula a code-review: 1º turno dispara subagentes (Task) e ENCERRA o turno
+            # aguardando — não é pergunta e não está done. O worker não deve atropelar
+            # (item 2): deve pedir para CONTINUAR. Turnos seguintes consolidam.
+            if self._turn == 1:
+                yield _delta("iniciando a review... ")
+                yield FakeAssistantMessage([
+                    FakeToolUseBlock("Task", {"subagent_type": "review-layer"}),
+                    FakeTextBlock("Disparei as 3 camadas de review em subagentes; "
+                                  "aguardando o retorno delas."),
+                ])
+                yield FakeResultMessage()
+            else:
+                yield FakeAssistantMessage([FakeTextBlock(
+                    "Camadas retornaram; consolidei o veredito e atualizei o sprint-status.")])
+                yield FakeResultMessage()
+            return
+
         if _REC.worker_mode == "block":
             yield _delta("trabalhando...")
             await asyncio.sleep(3600)        # bloqueia (cancelável) — simula turno longo

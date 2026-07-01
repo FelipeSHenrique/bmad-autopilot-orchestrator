@@ -452,39 +452,15 @@ def test_gate_passes_advances(git_project: Path, fake_claude):
     assert SprintStatus(git_project / SS_REL).story_status("7-2-create-api") == "done"
 
 
-def test_gate_no_go_corrects_in_same_session(git_project: Path, fake_claude):
-    """No-go → o prompt de correção do advisor vai pra MESMA sessão (resume) e o
-    gate revalida; depois a fase avança."""
+def test_gate_no_go_pauses_without_rerun(git_project: Path, fake_claude):
+    """No-go NÃO re-executa a fase (cara): pausa pro humano (checkpoint). Ao aprovar,
+    avança — e o worker rodou a fase sem nenhum resume/re-run."""
     rec = fake_claude
     rec.gate_verdicts = [
-        {"ok": False, "blockers": ["falta teste de regressão"],
-         "corrections": "Adicione o teste de regressão do SET NULL."},
+        {"ok": False, "blockers": ["falta teste de regressão"], "corrections": ""},
         {"ok": True, "blockers": [], "corrections": ""},
     ]
     cfg = config_for_project(git_project, phases=safe_phases())
-    sink = EventSink()
-    kinds: list[str] = []
-    sink.add_callback(lambda e: kinds.append(e.kind))
-
-    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
-                         sink=sink, control=RunControl()))
-
-    assert "gate_correcting" in kinds
-    # a correção reabriu a MESMA sessão da fase (resume == session_id da 1ª sessão worker)
-    assert rec.sessions[1]["resume"] == rec.sessions[0]["session_id"]
-    # o prompt de correção do advisor foi injetado no worker
-    assert any(role == "worker" and "Adicione o teste de regressão" in p
-               for role, p in rec.queries)
-    assert SprintStatus(git_project / SS_REL).story_status("7-2-create-api") == "done"
-
-
-def test_gate_cap_pauses_for_human(git_project: Path, fake_claude):
-    """Gate reprovando sempre → após max_gate_rounds, pausa pro humano (checkpoint);
-    não loopa, e ao aprovar avança."""
-    rec = fake_claude
-    rec.gate_verdicts = [{"ok": False, "blockers": ["x"], "corrections": "fix"}] * 3
-    cfg = config_for_project(git_project, phases=safe_phases())
-    cfg.max_gate_rounds = 2
     sink = EventSink()
     kinds: list[str] = []
     sink.add_callback(lambda e: kinds.append(e.kind))
@@ -498,13 +474,33 @@ def test_gate_cap_pauses_for_human(git_project: Path, fake_claude):
             if "checkpoint_hit" in kinds:
                 break
             await asyncio.sleep(0.02)
-        assert "checkpoint_hit" in kinds      # pausou pro humano (teto)
+        assert "checkpoint_hit" in kinds       # no-go pausou pro humano
         assert not task.done()
-        control.approve()                      # aprova -> avança
+        control.approve()                       # aprova -> avança
         await asyncio.wait_for(task, timeout=10)
 
     asyncio.run(go())
-    assert kinds.count("gate_review") >= 3     # revisou ≥3× antes de pausar
+    assert "gate_review" in kinds
+    assert "gate_correcting" not in kinds       # NÃO houve correção/re-run
+    assert all(not s.get("resume") for s in rec.sessions)   # nenhuma fase re-executada
+    assert SprintStatus(git_project / SS_REL).story_status("7-2-create-api") == "done"
+
+
+def test_worker_waits_for_background_activity(git_project: Path, fake_claude):
+    """Item 2: num turno com ATIVIDADE (disparou subagentes de review) que não está done
+    nem perguntando, o worker pede para CONTINUAR (deixa concluir) ANTES de qualquer
+    empurrão de 'finalize' — não atropela o trabalho em background."""
+    rec = fake_claude
+    rec.worker_mode = "activity"
+    cfg = config_for_project(git_project, phases=safe_phases())
+    asyncio.run(run_loop(cfg, story="7-2-create-api", epic=None, dry_run=False,
+                         sink=EventSink(), control=RunControl()))
+
+    wq = [p for role, p in rec.queries if role == "worker"]
+    idx_cont = next((i for i, p in enumerate(wq) if "Continue e conclua o que você iniciou" in p), 999)
+    idx_fin = next((i for i, p in enumerate(wq) if "escolha a melhor opção" in p), 999)
+    assert idx_cont < 999            # o worker pediu para continuar (item 2)
+    assert idx_cont < idx_fin        # continuou ANTES de mandar finalizar (não atropelou)
 
 
 def test_stop_cancels_mid_turn(git_project: Path, fake_claude):

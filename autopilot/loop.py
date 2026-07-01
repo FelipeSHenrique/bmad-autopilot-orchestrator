@@ -77,38 +77,30 @@ async def _run_one_phase(
         final_text, sid = await run_phase(skill, target_id, cfg, advisor, sink, control,
                                           dry_run=False, done_predicate=done_predicate)
         if cfg.enable_gate:
-            await _run_gate(skill, target_id, cfg, advisor, sink, control, final_text, sid)
+            await _run_gate(skill, target_id, cfg, advisor, sink, control, final_text)
         return advisor.last_escalation
 
 
 async def _run_gate(
     skill: str, target_id: str, cfg: Config, advisor, sink: EventSink,
-    control: RunControl, final_text: str, sid: str | None,
+    control: RunControl, final_text: str,
 ) -> None:
     """Gate de conclusão: o advisor valida o resultado da fase e diz se pode avançar.
 
-    No-go → corrige na MESMA sessão (resume) com o prompt do advisor e revalida.
-    Após `max_gate_rounds` sem aprovar, pausa pro humano (checkpoint)."""
-    rounds = 0
-    while True:
-        v = await advisor.review_phase(skill, target_id, final_text)
-        blockers = v.get("blockers", [])
-        await sink.emit(ev.gate_review(skill, target_id, v["ok"], blockers))
-        if v["ok"]:
-            return
-        rounds += 1
-        if rounds > cfg.max_gate_rounds:   # teto -> pausa pro humano decidir
-            await sink.emit(ev.checkpoint_hit(
-                f"gate bloqueou {skill}:{target_id} — {'; '.join(blockers) or 'pendências'}"))
-            await control.wait_approval()  # aprovar = avança; stop = encerra
-            return
-        await sink.emit(ev.gate_correcting(skill, target_id))   # no-go -> corrige na mesma sessão
-        # done_predicate=None de propósito: o status já está no alvo (a skill avançou),
-        # então a correção deve rodar até o worker concluir, não parar no 1º turno.
-        final_text, sid = await run_phase(
-            skill, target_id, cfg, advisor, sink, control,
-            done_predicate=None, resume_session=sid,
-            resume_prompt=v.get("corrections") or "Corrija os pontos apontados e conclua a fase.")
+    Na REPROVAÇÃO NÃO re-executa a fase automaticamente — re-rodar uma fase cara
+    (ex.: code-review com camadas adversariais) queima tokens e atropela o trabalho
+    em andamento da skill. Em vez disso, PAUSA e deixa o humano decidir: aprovar e
+    avançar, ou parar (e corrigir manualmente re-rodando). Como o worker agora deixa
+    o trabalho assíncrono concluir (item 2), a fase costuma passar de primeira e o
+    gate raramente bloqueia."""
+    v = await advisor.review_phase(skill, target_id, final_text)
+    blockers = v.get("blockers", [])
+    await sink.emit(ev.gate_review(skill, target_id, v["ok"], blockers))
+    if v["ok"]:
+        return
+    await sink.emit(ev.checkpoint_hit(
+        f"gate bloqueou {skill}:{target_id} — {'; '.join(blockers) or 'pendências'}"))
+    await control.wait_approval()  # aprovar = avança; stop = encerra
 
 
 async def _ask_recovery(esc: Escalation, sink: EventSink, control: RunControl) -> bool:
